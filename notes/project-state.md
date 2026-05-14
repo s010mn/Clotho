@@ -242,3 +242,189 @@ nolte_g_time(delta, m, delta0=0.0)
 原因：
 
 G-time 是纯时间变换，不需要压力。压力导数和闭合诊断对噪声、重采样和平滑策略非常敏感，必须后续单独审计。
+
+## Phase 3C：G-time 与 window/tp 的本地 smoke 审计
+
+本阶段只做本地审计，没有修改 Clotho 源码，没有修改 CLI，没有 commit 真实井数据。
+
+审计目标：
+
+```text
+停泵后 elapsed seconds
+→ delta = elapsed_seconds / tp_seconds
+→ nolte_g_time(delta, m=0.8)
+```
+
+使用当前 Clotho 代码：
+
+```python
+from clotho.stage_data import elapsed_seconds_after
+from clotho.stage_data import find_shut_in_index
+from clotho.stage_data import read_stage_curve
+from clotho.stage_data import read_stage_params
+from clotho.stage_data import rate_positive_duration_seconds
+from clotho.stage_data import volume_over_max_rate_duration_seconds
+from clotho.g_function import nolte_g_time
+```
+
+参考数据只从仓库外读取：
+
+```text
+/tmp/gfunction-ref-audit-phase3c/Gfunction-wells-current/wells/well4
+```
+
+没有复制以下目录或数据到 Clotho：
+
+```text
+gfunc/
+wells/
+well4/
+data/raw/
+真实井数据
+```
+
+### Stage 1 smoke
+
+审计条件：
+
+```text
+stage = 1
+data_file = stage_data/stage_01.csv
+shut_in_time = 09:42:53
+volume_column = total_volume
+rate_time_unit = minute
+max_sustained_rate = P95 positive rate before shut-in
+m = 0.8
+```
+
+本地输出：
+
+```text
+shut_in_index=13664
+p95_positive_rate=19.94
+top10_median_positive_rate=19.93
+rate_gt0_seconds=13659
+rate_gt10_seconds=9818
+tp_seconds_total_volume_over_p95_rate=9567.86359077
+elapsed_first8=[0. 1. 2. 3. 4. 5. 6. 7.]
+delta_first8=[0.         0.00010452 0.00020903 0.00031355 0.00041807 0.00052258
+ 0.0006271  0.00073162]
+G_first8_m_0p8=[0.         0.00024327 0.00048538 0.00072673 0.00096745 0.00120763
+ 0.00144734 0.00168661]
+elapsed_first50_has_duplicate=False
+elapsed_first50_has_backward_step=False
+```
+
+解释：
+
+- `elapsed_seconds_after()` 给出停泵后真实秒数；
+- `tp_seconds` 使用 `total_volume / P95 正排量`；
+- `delta = elapsed_seconds / tp_seconds`，是无量纲；
+- `nolte_g_time(delta, m=0.8)` 输出无量纲 G-time。
+
+Stage 1 的结果与 Phase 3A/3B 的手工 sanity check 一致。
+
+### Stage 29 smoke
+
+审计条件：
+
+```text
+stage = 29
+data_file = stage_data/stage_29.csv
+shut_in_time = 13:28:05
+volume_column = total_volume
+rate_time_unit = minute
+max_sustained_rate = P95 positive rate before shut-in
+m = 0.8
+```
+
+本地输出：
+
+```text
+shut_in_index=19273
+p95_positive_rate=20.06
+top10_median_positive_rate=20.06
+rate_gt0_seconds=14874
+rate_gt10_seconds=10214
+tp_seconds_total_volume_over_p95_rate=9328.444666
+elapsed_first8=[0. 2. 2. 3. 4. 5. 6. 7.]
+delta_first8=[0.         0.0002144  0.0002144  0.0003216  0.0004288  0.000536
+ 0.00064319 0.00075039]
+G_first8_m_0p8=[0.         0.00049779 0.00049779 0.00074528 0.00099213 0.00123842
+ 0.00148421 0.00172955]
+elapsed_first50_has_duplicate=True
+elapsed_first50_has_backward_step=False
+```
+
+说明：
+
+- Stage 29 停泵后前 50 个 elapsed seconds 中存在重复时间戳；
+- 当前阶段只记录该数据现象；
+- 不在 Phase 3C 中修复；
+- 不解释成物理结论；
+- 不据此做 closure 或反演。
+
+### 负向检查
+
+使用 `stage_volume` 作为体积列时，仍然会失败：
+
+```text
+negative_check_stage_volume=PASS
+negative_check_error=体积列 'stage_volume' 在停泵前出现回落或重置
+```
+
+这说明 Phase 2C.1 的体积列边界检查仍然生效。
+
+### 当前结论
+
+Phase 3C 只证明：
+
+```text
+当前 stage_data.py 的停泵后 elapsed seconds
+可以和当前 g_function.py 的 Nolte G-time 公式连接。
+```
+
+它不证明：
+
+- 不证明 closure 识别正确；
+- 不证明裂缝参数反演正确；
+- 不证明 `total_volume / P95 正排量` 是最终唯一 tp 口径；
+- 不证明 G-function 导数可直接使用；
+- 不证明与微地震、广域电磁、SRV/HDS-SRV 有正相关。
+
+当前仍然没有实现：
+
+- `dP/dG`
+- `G dP/dG`
+- pressure smoothing
+- closure diagnostics
+- Carter leakoff
+- PKN
+- volume balance
+- fracture inversion
+- Excel/PNG reporting
+
+### 对 CLI 的暂定判断
+
+暂时不把 G-time 输出加入 `clotho window-audit`。
+
+原因：
+
+- CLI 如果输出 G-time，必须明确说明使用哪一种 tp；
+- 当前只是本地 smoke 审计；
+- 过早加 `--g-time-m` 容易让使用者误以为 G-time 结果已经绑定了最终推荐的 tp 策略。
+
+后续如果要加 CLI，应单独设计，例如：
+
+```text
+--g-time-m 0.8
+--g-time-count 8
+```
+
+并且必须在输出中明确：
+
+```text
+g_time_tp_source = volume_over_max_sustained_rate_seconds
+```
+
+但这不是 Phase 3C.1 的任务。
