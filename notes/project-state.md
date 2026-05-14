@@ -196,3 +196,49 @@ Clotho 当前命名：
 - 不代表裂缝参数反演已经验证；
 - 不判断哪种 tp 在所有井段上最终正确；
 - 只是进入 G-function 公式前的数据窗口口径审计。
+
+## Phase 3B：教学版 Nolte G-time 公式
+
+新增小文件：
+
+```text
+src/clotho/g_function.py
+```
+
+它只实现纯 G-time 数学公式：
+
+```text
+g_function_time(delta, m)
+nolte_g_time(delta, m, delta0=0.0)
+```
+
+含义：
+
+- `delta = elapsed_time / tp`，无量纲；
+- `g_function_time(delta, m)` 返回中间函数 `g(Δ,m)`；
+- `nolte_g_time(delta, m, delta0=0.0)` 返回归一化后的 G-time；
+- `delta0` 只做平移归零。
+
+当前实现范围：
+
+- `m=1` 使用解析公式；
+- `m=1/2` 使用解析公式；
+- 其他 `0 < m <= 1` 使用 NumPy 梯形积分；
+- 真实负 `delta` 会报错；
+- 极小浮点误差导致的负值，例如 `-1e-13`，会按 0 处理；
+- `m` 当前限制为 `0 < m <= 1`。
+
+当前仍不实现：
+
+- `dP/dG`;
+- `G dP/dG`;
+- pressure smoothing;
+- closure diagnostics;
+- Carter leakoff;
+- PKN;
+- volume balance;
+- fracture inversion.
+
+原因：
+
+G-time 是纯时间变换，不需要压力。压力导数和闭合诊断对噪声、重采样和平滑策略非常敏感，必须后续单独审计。
