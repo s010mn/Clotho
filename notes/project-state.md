@@ -131,3 +131,68 @@ Clotho 当前命名：
 ## 下一步提醒
 
 下一步仍不直接迁移旧库公式。优先候选是用 `clotho window-audit` 对真实/参考井少量 stage 做窗口策略审计：只比较不同 tp 选法，不反演裂缝参数。等 tp 口径稳定后，再进入 G-function formula audit。
+
+## Phase 2E：well4 stage 1/29 window-audit 审计
+
+使用 `clotho window-audit` 对参考库 `/tmp/gfunction-ref-audit/Gfunction-wells-current/wells/well4`
+中的 stage 1 和 stage 29 做了本地窗口审计。参考数据没有复制进 Clotho 仓库。
+
+审计条件：
+
+- `volume_column=total_volume`
+- `rate_time_unit=minute`
+- 未传 `picked_start_time`，因为尚未人工确认“裂缝打开时间”
+- `max_sustained_rate` 使用两个审计代理值：
+  - 停泵前正排量 P95
+  - 停泵前正排量最高 10% 的中位数
+
+结果摘要：
+
+### Stage 1
+
+- `shut_in_time=09:42:53`
+- `p95_positive_rate=19.94`
+- `top10_median_rate=19.93`
+- `rate > 0` 累计时间：`13659.0 s`
+- `rate > 10` 累计时间：`9818.0 s`
+- `total_volume / P95 正排量`：`9567.86 s`
+- `rate > 0` 比体积/排量法长约 `43%`
+- `rate > 10` 与体积/排量法差约 `2.6%`
+
+### Stage 29
+
+- `shut_in_time=13:28:05`
+- `p95_positive_rate=20.06`
+- `top10_median_rate=20.06`
+- `rate > 0` 累计时间：`14874.0 s`
+- `rate > 10` 累计时间：`10214.0 s`
+- `total_volume / P95 正排量`：`9328.44 s`
+- `rate > 0` 比体积/排量法长约 `59%`
+- `rate > 10` 与体积/排量法差约 `9.5%`
+
+负向检查：
+
+- 对 well4 stage 1 使用 `volume_column=stage_volume` 会失败；
+- 错误信息包含 `stage_volume` 和“回落或重置”；
+- 这说明体积列安全检查生效。
+
+当前解释：
+
+- `rate > 0` 累计法容易把低排量、预注入、阶梯降排量或同步误差计入 tp，因此偏长；
+- `rate > 10` 更接近高排量主施工窗口，但仍只是经验代理；
+- `total_volume / 最大稳定排量` 更符合当前主候选 tp 口径；
+- P95 正排量和 top10 median 正排量在 stage 1 与 stage 29 差异很小，说明这两段高排量平台较稳定；
+- `human_picked` 仍然保留，但必须等待人工或后续清晰规则给出“裂缝打开时间”。
+
+当前暂定策略：
+
+- 主候选：`volume_over_max_sustained_rate`，使用 `volume_column=total_volume` 和人工确认或审计代理的最大稳定排量；
+- sanity check：`rate_positive_elapsed`，建议使用 `min_rate=10` 作为高排量窗口代理；
+- 对照/反例：`rate_positive_elapsed` with `min_rate=0`，因为它在 well4 stage 1 和 stage 29 上明显偏长。
+
+注意：
+
+- 这仍然不是 G-function 结论；
+- 不代表裂缝参数反演已经验证；
+- 不判断哪种 tp 在所有井段上最终正确；
+- 只是进入 G-function 公式前的数据窗口口径审计。
