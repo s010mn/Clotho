@@ -1,0 +1,27 @@
+[project]
+name = "clotho"
+version = "0.1.0"
+description = "Research code for shut-in pressure response, G-function/DFIT analysis, and fracture-network parameter evaluation."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.4",
+    "pandas>=3.0.3",
+]
+
+[project.scripts]
+clotho = "clotho.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

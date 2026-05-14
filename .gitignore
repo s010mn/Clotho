@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Generated research outputs
+outputs/runs/
+
+# Data should be added only with explicit provenance and review.
+data/raw/
+data/processed/
+
+# Local scratch
+/tmp/
+scratch/
