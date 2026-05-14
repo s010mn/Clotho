@@ -108,6 +108,25 @@ Clotho 当前命名：
 - 对 well4 这类数据，`total_volume` 是更合理的累计注入量候选；
 - 这仍然不是 G-function 结论，只是进入 G-function 前的数据口径审计。
 
+## Phase 2D：最小 window-audit CLI
+
+新增 `clotho window-audit` 命令，用于对外部井目录中的单个 stage 做窗口策略审计。
+
+它只输出几个 tp 候选值：
+
+- `rate_positive_elapsed_seconds`
+- `volume_over_max_sustained_rate_seconds`
+- 可选的 `picked_duration_seconds`
+
+注意：
+
+- 它不计算 G-function；
+- 不做 closure；
+- 不反演裂缝参数；
+- 不复制真实数据；
+- `volume_column` 和 `max_sustained_rate` 必须显式传入；
+- 这个命令只是为了让窗口策略审计可复现。
+
 ## 下一步提醒
 
-下一步仍不直接迁移旧库公式。优先候选是真实/参考井少量 stage 的窗口策略审计：只比较不同 tp 选法，不反演裂缝参数。等 tp 口径稳定后，再进入 G-function formula audit。
+下一步仍不直接迁移旧库公式。优先候选是用 `clotho window-audit` 对真实/参考井少量 stage 做窗口策略审计：只比较不同 tp 选法，不反演裂缝参数。等 tp 口径稳定后，再进入 G-function formula audit。
