@@ -3,16 +3,20 @@
 This file is read automatically at startup. It is the durable project memory for Feynman.
 
 ## Project Overview
-- State the research question, target artifact, target venue, and key datasets or benchmarks here.
+- Project name: **Clotho: 基于停泵数据的压裂缝网参数评价方法研究**
+- Research context: 硕士毕业论文研究项目。
+- Core objective: 基于停泵数据/停泵压力响应，研究压裂缝网参数的评价与解释方法。
+- Target artifact: 学位论文、研究笔记、数据处理与方法验证代码。
+- Key source types: DFIT/停泵压力解释文献、压裂缝网参数评价方法、相关现场或公开示例数据。
 
 ## AI Research Context
-- Problem statement:
-- Core hypothesis:
-- Closest prior work:
-- Required baselines:
-- Required ablations:
-- Primary metrics:
-- Datasets / benchmarks:
+- Problem statement: 如何从停泵数据中提取能够表征压裂缝网参数的信息，并形成可解释、可验证的评价方法。
+- Core hypothesis: 停泵后的压力响应包含与裂缝闭合、储层渗流、缝网导流能力和几何复杂度相关的信息，可用于约束压裂缝网参数评价。
+- Closest prior work: DFIT/G-function/合规性方法、压力衰减分析、压裂缝网解释与参数反演研究。
+- Required baselines: TODO: 根据文献综述确定。
+- Required ablations: TODO: 根据方法设计确定。
+- Primary metrics: TODO: 根据实验设计确定。
+- Datasets / benchmarks: TODO: 确定现场数据、公开数据或合成算例。
 
 ## Ground Rules
 - Do not modify raw data in `Data/Raw/` or equivalent raw-data folders.
