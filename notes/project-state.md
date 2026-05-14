@@ -469,3 +469,271 @@ nolte_g_time
 - Excel/PNG reporting
 
 Stage 29 这类重复 elapsed timestamp 只原样输出，不在本阶段重采样或修正。
+
+## Phase 3E：压力-G-time 导数前置条件本地审计
+
+本阶段只做本地审计，没有修改源码、测试或 CLI，没有提交真实井数据。
+
+审计目标是回答：
+
+```text
+当前停泵后压力曲线 + 当前 G-time 序列，是否已经满足后续计算 dP/dG 的最基本数据条件？
+```
+
+本阶段没有计算：
+
+- `dP/dG`
+- `G dP/dG`
+- closure
+- Carter
+- PKN
+- volume balance
+- fracture inversion
+
+### 审计方法
+
+使用当前 Clotho 代码：
+
+- `elapsed_seconds_after()`
+- `volume_over_max_rate_duration_seconds()`
+- `nolte_g_time()`
+- `add_estimated_bottomhole_pressure()`
+
+时间尺度仍使用：
+
+```text
+tp_seconds = total_volume / P95 positive rate before shut-in
+rate_time_unit = minute
+m = 0.8
+```
+
+后续导数的最基本前置条件暂定为：
+
+- G-time 必须严格递增；
+- G-time 不能有 NaN 或 inf；
+- 压力列不能有 NaN 或 inf；
+- 停泵后样点数至少大于等于 3。
+
+注意：
+
+- 这里没有调用 `np.gradient(P, G)`；
+- 这里只判断是否具备直接计算导数的基本条件。
+
+### Stage 1 审计结果
+
+本地输出摘要：
+
+```text
+stage=1
+shut_in_time=09:42:53
+shut_in_index=13664
+post_shut_in_rows=1224
+liquid_column_pressure_mpa=42.5517
+p95_positive_rate=19.94
+tp_seconds_total_volume_over_p95_rate=9567.86359077
+```
+
+时间和 G-time 单调性：
+
+```text
+elapsed_duplicate_step_count=3
+elapsed_backward_step_count=0
+elapsed_strictly_increasing=False
+elapsed_nondecreasing=True
+
+g_time_duplicate_step_count=3
+g_time_backward_step_count=0
+g_time_strictly_increasing=False
+g_time_nondecreasing=True
+
+elapsed_step_min=0
+elapsed_step_median=1
+elapsed_step_max=3
+```
+
+前 12 个样点：
+
+```text
+elapsed_first12=[ 0.  1.  2.  3.  4.  5.  6.  7.  8.  9. 10. 11.]
+
+delta_first12=[0.         0.00010452 0.00020903 0.00031355 0.00041807 0.00052258
+ 0.0006271  0.00073162 0.00083613 0.00094065 0.00104517 0.00114968]
+
+g_time_first12=[0.         0.00024327 0.00048538 0.00072673 0.00096745 0.00120763
+ 0.00144734 0.00168661 0.00192548 0.00216397 0.00240211 0.00263991]
+```
+
+压力列摘要：
+
+```text
+wellhead_pressure_summary={'finite_count': 1224, 'nan_or_inf_count': 0, 'min': 0.0, 'median': 64.18, 'max': 67.27}
+
+estimated_bottomhole_pressure_summary={'finite_count': 1224, 'nan_or_inf_count': 0, 'min': 42.5517, 'median': 106.7317, 'max': 109.82169999999999}
+
+pressure_shift_summary={'finite_count': 1224, 'nan_or_inf_count': 0, 'min': 42.55169999999999, 'median': 42.5517, 'max': 42.551700000000004}
+```
+
+导数前置条件判断：
+
+```text
+derivative_ready_strict_g_and_finite_pressure=False
+derivative_blockers=G-time is not strictly increasing
+derivative_was_computed=False
+closure_was_computed=False
+```
+
+解释：
+
+- Stage 1 前 12 个样点看起来严格递增；
+- 但完整停泵后序列中存在 3 个重复 elapsed step；
+- 因此完整 G-time 序列也存在 3 个重复 step；
+- 所以 stage 1 不能直接进入 `dP/dG`。
+
+这修正了 Phase 3C 的一个局限：
+
+- Phase 3C 只检查了 stage 1 的前 50 个 elapsed；
+- Phase 3E 检查完整 post-shut-in 序列后，发现 stage 1 后部仍存在重复 elapsed。
+
+### Stage 29 审计结果
+
+本地输出摘要：
+
+```text
+stage=29
+shut_in_time=13:28:05
+shut_in_index=19273
+post_shut_in_rows=1112
+liquid_column_pressure_mpa=42.7672
+p95_positive_rate=20.06
+tp_seconds_total_volume_over_p95_rate=9328.444666
+```
+
+时间和 G-time 单调性：
+
+```text
+elapsed_duplicate_step_count=1
+elapsed_backward_step_count=0
+elapsed_strictly_increasing=False
+elapsed_nondecreasing=True
+
+g_time_duplicate_step_count=1
+g_time_backward_step_count=0
+g_time_strictly_increasing=False
+g_time_nondecreasing=True
+
+elapsed_step_min=0
+elapsed_step_median=1
+elapsed_step_max=2
+```
+
+前 12 个样点：
+
+```text
+elapsed_first12=[ 0.  2.  2.  3.  4.  5.  6.  7.  8.  9. 10. 11.]
+
+delta_first12=[0.         0.0002144  0.0002144  0.0003216  0.0004288  0.000536
+ 0.00064319 0.00075039 0.00085759 0.00096479 0.00107199 0.00117919]
+
+g_time_first12=[0.         0.00049779 0.00049779 0.00074528 0.00099213 0.00123842
+ 0.00148421 0.00172955 0.00197448 0.00221901 0.00246317 0.00270698]
+```
+
+压力列摘要：
+
+```text
+wellhead_pressure_summary={'finite_count': 1112, 'nan_or_inf_count': 0, 'min': 0.0, 'median': 67.795, 'max': 84.95}
+
+estimated_bottomhole_pressure_summary={'finite_count': 1112, 'nan_or_inf_count': 0, 'min': 42.7672, 'median': 110.5622, 'max': 127.7172}
+
+pressure_shift_summary={'finite_count': 1112, 'nan_or_inf_count': 0, 'min': 42.767199999999995, 'median': 42.7672, 'max': 42.76720000000001}
+```
+
+导数前置条件判断：
+
+```text
+derivative_ready_strict_g_and_finite_pressure=False
+derivative_blockers=G-time is not strictly increasing
+derivative_was_computed=False
+closure_was_computed=False
+```
+
+解释：
+
+- Stage 29 停泵后早期已经出现重复 elapsed；
+- 重复 elapsed 导致重复 delta；
+- 重复 delta 导致重复 G-time；
+- 所以 stage 29 不能直接进入 `dP/dG`。
+
+### 压力口径解释
+
+当前 Clotho 的压力口径仍然是：
+
+```text
+estimated_bottomhole_pressure_mpa = wellhead_pressure_mpa + liquid_column_pressure_mpa
+```
+
+其中：
+
+- `wellhead_pressure_mpa` 是原始井口压力列；
+- `estimated_bottomhole_pressure_mpa` 是估算井底压力；
+- `estimated_bottomhole_pressure_mpa` 不是井下压力计实测 BHP。
+
+如果单个 stage 内液柱压力只是常数，则：
+
+```text
+P_estimated = P_wellhead + constant
+```
+
+因此：
+
+- 常数液柱压力不改变 `dP/dG` 的形状；
+- 常数液柱压力会改变 closure pressure 的绝对压力值口径。
+
+本阶段没有计算导数，也没有计算 closure pressure。
+
+### 额外数据质量观察
+
+Stage 1 和 stage 29 的停泵后压力列均为有限值：
+
+```text
+nan_or_inf_count=0
+```
+
+但两段的井口压力摘要都出现：
+
+```text
+min=0.0
+```
+
+这不是 Phase 3E 的主要 blocker。当前主要 blocker 是：
+
+```text
+G-time is not strictly increasing
+```
+
+但后续如果进入压力质量审计，需要单独检查停泵后压力为 0 的行是否是传感器缺测、填充值、尾部数据截断或真实记录。
+
+### 当前结论
+
+Phase 3E 证明：
+
+- 当前 well4 stage 1 和 stage 29 的完整停泵后 G-time 序列不是严格递增；
+- 因此不能直接用当前序列进入 `np.gradient(P, G)` 或 closure 诊断。
+
+当前还不能做：
+
+- 直接计算 `dP/dG`；
+- 直接计算 `G dP/dG`；
+- 直接判断 closure；
+- 直接反演裂缝参数。
+
+后续如果要进入压力导数，必须先设计并审计至少一种数据处理策略，例如：
+
+- 重复 timestamp / 重复 G-time 的处理；
+- 是否按 elapsed 或 G-time 聚合重复点；
+- 是否保留第一个点、最后一个点或取均值；
+- 是否重采样到严格递增网格；
+- 是否做平滑；
+- 压力为 0 的行如何处理。
+
+这些策略都会影响导数形状和 closure 判断，因此不能默认静默处理。
