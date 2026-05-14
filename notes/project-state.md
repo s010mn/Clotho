@@ -737,3 +737,53 @@ Phase 3E 证明：
 - 压力为 0 的行如何处理。
 
 这些策略都会影响导数形状和 closure 判断，因此不能默认静默处理。
+
+## Phase 3F：window-audit 可选 derivative-readiness 数据质量输出
+
+新增 `clotho window-audit --derivative-readiness`。
+
+该输出只在用户显式传入 `--derivative-readiness` 时出现，并要求同时传入 `--g-time-m`。
+
+本阶段只检查后续直接计算 `dP/dG` 的最基本数据前置条件：
+
+- post-shut-in 样点数是否至少为 3；
+- G-time 是否为有限值；
+- G-time 是否严格递增；
+- 压力列是否为有限值；
+- 井口压力是否出现 0 或非正值。
+
+该输出不计算：
+
+- `dP/dG`；
+- `G dP/dG`；
+- closure；
+- smoothing；
+- 重采样；
+- 去重；
+- Carter；
+- PKN；
+- volume balance；
+- fracture inversion。
+
+如果存在重复 elapsed 或重复 G-time，只报告，不修正。
+
+Phase 3F 的 CLI 输出字段使用 `derivative_readiness_` 前缀，并明确输出：
+
+```text
+derivative_was_computed=False
+closure_was_computed=False
+```
+
+可选参考 smoke 摘要：
+
+```text
+stage 1:
+elapsed_duplicate_step_count=3
+g_time_duplicate_step_count=3
+derivative_readiness_ready=False
+
+stage 29:
+elapsed_duplicate_step_count=1
+g_time_duplicate_step_count=1
+derivative_readiness_ready=False
+```

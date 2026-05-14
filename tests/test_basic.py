@@ -168,6 +168,7 @@ def test_window_audit_cli_does_not_print_g_time_by_default(tmp_path, capsys) -> 
     assert "volume_over_max_sustained_rate_seconds=6.0" in captured.out
     assert "g_time_tp_source" not in captured.out
     assert "nolte_g_time" not in captured.out
+    assert "derivative_readiness_" not in captured.out
 
 
 def test_window_audit_cli_prints_optional_g_time_preview(tmp_path, capsys) -> None:
@@ -205,4 +206,93 @@ def test_window_audit_cli_rejects_nonpositive_g_time_count(tmp_path, capsys) -> 
 
     assert exc_info.value.code == 2
     assert "g_time_count" in captured.err
+    assert "well=demo" not in captured.out
+
+
+def _write_duplicate_elapsed_window_audit_inputs(tmp_path) -> tuple[object, object]:
+    stage_params, well_root = _write_g_time_window_audit_inputs(tmp_path)
+
+    curve_file = tmp_path / "stage_data" / "stage_01.csv"
+    curve_file.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "00:00:00,20,10,0,0\n"
+        "00:00:01,21,10,0.3333333333,0.3333333333\n"
+        "00:00:02,22,10,0.6666666667,0.6666666667\n"
+        "00:00:03,23,0,1.0,1.0\n"
+        "00:00:04,22,0,1.0,1.0\n"
+        "00:00:04,0,0,1.0,1.0\n"
+        "00:00:05,21,0,1.0,1.0\n",
+        encoding="utf-8",
+    )
+
+    return stage_params, well_root
+
+
+def test_window_audit_cli_reports_clean_derivative_readiness(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_g_time_window_audit_inputs(tmp_path)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + ["--g-time-m", "0.8", "--derivative-readiness"]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "derivative_readiness_tp_source=volume_over_max_sustained_rate_seconds" in captured.out
+    assert "derivative_readiness_pressure_column=estimated_bottomhole_pressure_mpa" in captured.out
+    assert "derivative_readiness_post_shut_in_rows=3" in captured.out
+    assert "derivative_readiness_elapsed_duplicate_step_count=0" in captured.out
+    assert "derivative_readiness_elapsed_backward_step_count=0" in captured.out
+    assert "derivative_readiness_elapsed_strictly_increasing=True" in captured.out
+    assert "derivative_readiness_elapsed_nondecreasing=True" in captured.out
+    assert "derivative_readiness_g_time_duplicate_step_count=0" in captured.out
+    assert "derivative_readiness_g_time_backward_step_count=0" in captured.out
+    assert "derivative_readiness_g_time_strictly_increasing=True" in captured.out
+    assert "derivative_readiness_g_time_nondecreasing=True" in captured.out
+    assert "derivative_readiness_wellhead_pressure_zero_count=0" in captured.out
+    assert "derivative_readiness_estimated_bottomhole_pressure_available=True" in captured.out
+    assert "derivative_readiness_ready=True" in captured.out
+    assert "derivative_readiness_blockers=none" in captured.out
+    assert "derivative_was_computed=False" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_reports_duplicate_elapsed_readiness_blocker(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_duplicate_elapsed_window_audit_inputs(tmp_path)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + ["--g-time-m", "0.8", "--derivative-readiness"]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "derivative_readiness_post_shut_in_rows=4" in captured.out
+    assert "derivative_readiness_elapsed_duplicate_step_count=1" in captured.out
+    assert "derivative_readiness_elapsed_backward_step_count=0" in captured.out
+    assert "derivative_readiness_elapsed_strictly_increasing=False" in captured.out
+    assert "derivative_readiness_elapsed_nondecreasing=True" in captured.out
+    assert "derivative_readiness_g_time_duplicate_step_count=1" in captured.out
+    assert "derivative_readiness_g_time_backward_step_count=0" in captured.out
+    assert "derivative_readiness_g_time_strictly_increasing=False" in captured.out
+    assert "derivative_readiness_g_time_nondecreasing=True" in captured.out
+    assert "derivative_readiness_wellhead_pressure_zero_count=1" in captured.out
+    assert "derivative_readiness_ready=False" in captured.out
+    assert "derivative_readiness_blockers=G-time is not strictly increasing" in captured.out
+    assert "derivative_was_computed=False" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_derivative_readiness_requires_g_time_m(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_g_time_window_audit_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_g_time_window_audit_args(stage_params, well_root) + ["--derivative-readiness"])
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "--g-time-m" in captured.err
     assert "well=demo" not in captured.out
