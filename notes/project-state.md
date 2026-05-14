@@ -428,3 +428,44 @@ g_time_tp_source = volume_over_max_sustained_rate_seconds
 ```
 
 但这不是 Phase 3C.1 的任务。
+
+## Phase 3D：window-audit 可选 G-time 预览
+
+新增 `clotho window-audit --g-time-m` 和 `--g-time-count`。
+
+该输出只在用户显式传入 `--g-time-m` 时出现。默认 `window-audit` 输出保持不变。
+
+G-time 预览使用：
+
+```text
+delta = elapsed_seconds_after / volume_over_max_sustained_rate_seconds
+```
+
+其中 `volume_over_max_sustained_rate_seconds` 来自当前 CLI 已经输出的
+`total_volume / max_sustained_rate` 口径。
+
+输出字段包括：
+
+```text
+g_time_tp_source
+g_time_m
+g_time_count_requested
+g_time_count_returned
+g_time_elapsed_seconds
+g_time_delta
+nolte_g_time
+```
+
+本阶段仍然不实现：
+
+- `dP/dG`
+- `G dP/dG`
+- pressure smoothing
+- closure diagnostics
+- Carter leakoff
+- PKN
+- volume balance
+- fracture inversion
+- Excel/PNG reporting
+
+Stage 29 这类重复 elapsed timestamp 只原样输出，不在本阶段重采样或修正。

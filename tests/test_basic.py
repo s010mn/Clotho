@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from clotho import __version__
 from clotho.cli import main
+from clotho.g_function import nolte_g_time
 
 
 def test_package_has_version() -> None:
@@ -104,3 +107,102 @@ def test_window_audit_cli_echoes_custom_min_rate(tmp_path, capsys) -> None:
 
     assert exit_code == 0
     assert "min_rate=10.0" in captured.out
+
+
+def _write_g_time_window_audit_inputs(tmp_path) -> tuple[object, object]:
+    stage_data_dir = tmp_path / "stage_data"
+    stage_data_dir.mkdir()
+
+    stage_params = tmp_path / "stage_params.csv"
+    stage_params.write_text(
+        "well,stage,file,shut_in,n,spacing,hw,e_gpa,nu,sigma_min,add_pressure\n"
+        "demo,1,stage_data/stage_01.csv,00:00:03,1,10,50,30,0.25,90,5\n",
+        encoding="utf-8",
+    )
+
+    curve_file = stage_data_dir / "stage_01.csv"
+    curve_file.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "00:00:00,20,10,0,0\n"
+        "00:00:01,21,10,0.3333333333,0.3333333333\n"
+        "00:00:02,22,10,0.6666666667,0.6666666667\n"
+        "00:00:03,23,0,1.0,1.0\n"
+        "00:00:04,22,0,1.0,1.0\n"
+        "00:00:05,21,0,1.0,1.0\n",
+        encoding="utf-8",
+    )
+
+    return stage_params, tmp_path
+
+
+def _format_expected_float_list(values) -> str:
+    return "[" + ", ".join(f"{float(value):.12g}" for value in values) + "]"
+
+
+def _g_time_window_audit_args(stage_params, well_root) -> list[str]:
+    return [
+        "window-audit",
+        "--stage-params",
+        str(stage_params),
+        "--well-root",
+        str(well_root),
+        "--stage",
+        "1",
+        "--volume-column",
+        "total_volume",
+        "--max-sustained-rate",
+        "10.0",
+        "--rate-time-unit",
+        "minute",
+    ]
+
+
+def test_window_audit_cli_does_not_print_g_time_by_default(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_g_time_window_audit_inputs(tmp_path)
+
+    exit_code = main(_g_time_window_audit_args(stage_params, well_root))
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "volume_over_max_sustained_rate_seconds=6.0" in captured.out
+    assert "g_time_tp_source" not in captured.out
+    assert "nolte_g_time" not in captured.out
+
+
+def test_window_audit_cli_prints_optional_g_time_preview(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_g_time_window_audit_inputs(tmp_path)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + ["--g-time-m", "0.8", "--g-time-count", "3"]
+    )
+
+    captured = capsys.readouterr()
+    expected_delta = [0.0, 1.0 / 6.0, 1.0 / 3.0]
+    expected_g_time = nolte_g_time(expected_delta, 0.8)
+
+    assert exit_code == 0
+    assert "g_time_tp_source=volume_over_max_sustained_rate_seconds" in captured.out
+    assert "g_time_m=0.8" in captured.out
+    assert "g_time_count_requested=3" in captured.out
+    assert "g_time_count_returned=3" in captured.out
+    assert "g_time_elapsed_seconds=[0, 1, 2]" in captured.out
+    assert f"g_time_delta={_format_expected_float_list(expected_delta)}" in captured.out
+    assert f"nolte_g_time={_format_expected_float_list(expected_g_time)}" in captured.out
+
+
+def test_window_audit_cli_rejects_nonpositive_g_time_count(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_g_time_window_audit_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _g_time_window_audit_args(stage_params, well_root)
+            + ["--g-time-m", "0.8", "--g-time-count", "0"]
+        )
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "g_time_count" in captured.err
+    assert "well=demo" not in captured.out

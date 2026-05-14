@@ -5,8 +5,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from clotho import __version__
+from clotho.g_function import nolte_g_time
 from clotho.stage_data import (
     StageInfo,
+    elapsed_seconds_after,
     find_shut_in_index,
     picked_duration_seconds,
     rate_positive_duration_seconds,
@@ -53,8 +55,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional human-picked start time, such as fracture-opening time.",
     )
+    window_audit.add_argument(
+        "--g-time-m",
+        default=None,
+        type=float,
+        help="Optional Nolte G-time m parameter. Omit it to keep the old window-audit output.",
+    )
+    window_audit.add_argument(
+        "--g-time-count",
+        default=8,
+        type=int,
+        help="Number of post-shut-in samples to print when --g-time-m is provided.",
+    )
 
     return parser
+
+
+def _format_float_list(values) -> str:
+    """把数字列表格式化成稳定、易读、易测试的一行。"""
+    return "[" + ", ".join(f"{float(value):.12g}" for value in values) + "]"
 
 
 # 输入：stage_params 读取结果、段号和可选井名。输出：唯一匹配的压裂段。
@@ -67,8 +86,11 @@ def _find_stage(stages: list[StageInfo], *, stage_number: int, well: str | None)
     return matches[0]
 
 
-# 输入：window-audit 命令参数。输出：退出码；只做窗口审计，不做 G-function。
+# 输入：window-audit 命令参数。输出：退出码；只做窗口审计和可选 G-time 预览，不做导数、闭合或反演。
 def _run_window_audit(args: argparse.Namespace) -> int:
+    if args.g_time_m is not None and args.g_time_count <= 0:
+        raise ValueError("g_time_count 必须大于 0")
+
     stages = read_stage_params(args.stage_params)
     stage = _find_stage(stages, stage_number=args.stage, well=args.well)
     curve_file = args.well_root / stage.data_file
@@ -99,6 +121,19 @@ def _run_window_audit(args: argparse.Namespace) -> int:
     print(f"rate_time_unit={args.rate_time_unit}")
     print(f"rate_positive_elapsed_seconds={rate_positive_seconds}")
     print(f"volume_over_max_sustained_rate_seconds={volume_rate_seconds}")
+
+    if args.g_time_m is not None:
+        elapsed = elapsed_seconds_after(curve, shut_in_index)[: args.g_time_count]
+        delta = [seconds / volume_rate_seconds for seconds in elapsed]
+        g_time = nolte_g_time(delta, args.g_time_m)
+
+        print("g_time_tp_source=volume_over_max_sustained_rate_seconds")
+        print(f"g_time_m={args.g_time_m}")
+        print(f"g_time_count_requested={args.g_time_count}")
+        print(f"g_time_count_returned={len(elapsed)}")
+        print(f"g_time_elapsed_seconds={_format_float_list(elapsed)}")
+        print(f"g_time_delta={_format_float_list(delta)}")
+        print(f"nolte_g_time={_format_float_list(g_time)}")
 
     if args.picked_start_time is not None:
         picked_seconds = picked_duration_seconds(curve, args.picked_start_time, stage.shut_in_time)
