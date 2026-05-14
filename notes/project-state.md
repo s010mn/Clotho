@@ -787,3 +787,234 @@ elapsed_duplicate_step_count=1
 g_time_duplicate_step_count=1
 derivative_readiness_ready=False
 ```
+
+## Phase 3G：well4 全 stage derivative-readiness 本地审计
+
+本阶段只做本地审计，没有修改源码、测试或 CLI，没有提交真实井数据。
+
+审计目标：
+
+把 Phase 3F 的 derivative-readiness 数据质量检查扩展到 well4 全部 stage，
+判断重复 elapsed、重复 G-time、井口压力 0 值是个别现象还是全井段普遍现象。
+
+参考数据只从仓库外读取：
+
+```text
+/tmp/gfunction-ref-audit-phase3c/Gfunction-wells-current/wells/well4
+```
+
+本地 CSV 只写入：
+
+```text
+/tmp/gfunction-ref-audit-phase3g/well4_all_stage_derivative_readiness.csv
+```
+
+没有复制以下目录或数据到 Clotho：
+
+```text
+gfunc/
+wells/
+well4/
+data/raw/
+真实井数据
+```
+
+### 审计方法
+
+每个 stage 使用当前 Clotho 代码：
+
+- `read_stage_params()`
+- `read_stage_curve()`
+- `find_shut_in_index()`
+- `elapsed_seconds_after()`
+- `volume_over_max_rate_duration_seconds()`
+- `nolte_g_time()`
+- `add_estimated_bottomhole_pressure()`
+
+时间尺度：
+
+```text
+tp_seconds = total_volume / P95 positive rate before shut-in
+rate_time_unit = minute
+m = 0.8
+```
+
+最基本 derivative-readiness 条件仍为：
+
+- post-shut-in 样点数 >= 3
+- G-time 为有限值
+- G-time 严格递增
+- 压力列为有限值
+
+本阶段没有调用：
+
+```text
+np.gradient(P, G)
+```
+
+也没有计算：
+
+- `dP/dG`
+- `G dP/dG`
+- closure
+- Carter
+- PKN
+- volume balance
+- fracture inversion
+
+### 全 stage 摘要
+
+本地输出：
+
+```text
+stage_count=30
+ready_stage_count=14
+not_ready_stage_count=16
+ready_stages=3, 4, 6, 7, 8, 12, 15, 20, 22, 23, 25, 26, 28, 30
+not_ready_stages=1, 2, 5, 9, 10, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+```
+
+重复 elapsed / G-time 分布：
+
+```text
+elapsed_duplicate_stage_count=16
+elapsed_duplicate_stage_counts=1:3, 2:9, 5:55, 9:1, 10:1, 11:1, 13:3, 14:2, 16:2, 17:1, 18:1, 19:1, 21:68, 24:2, 27:1, 29:1
+
+elapsed_backward_stage_count=0
+elapsed_backward_stage_counts=none
+
+g_time_duplicate_stage_count=16
+g_time_duplicate_stage_counts=1:3, 2:9, 5:55, 9:1, 10:1, 11:1, 13:3, 14:2, 16:2, 17:1, 18:1, 19:1, 21:68, 24:2, 27:1, 29:1
+```
+
+压力质量摘要：
+
+```text
+wellhead_pressure_zero_stage_count=30
+wellhead_pressure_nonpositive_stage_count=30
+wellhead_pressure_nan_or_inf_stage_count=0
+estimated_bottomhole_pressure_nan_or_inf_stage_count=0
+```
+
+blocker 统计：
+
+```text
+derivative_readiness_blockers
+G-time is not strictly increasing    16
+none                                 14
+```
+
+### 重点 stage 现象
+
+重复 elapsed 最多的 stage：
+
+```text
+stage 21: elapsed_duplicate_step_count=68, g_time_duplicate_step_count=68
+stage 5:  elapsed_duplicate_step_count=55, g_time_duplicate_step_count=55
+stage 2:  elapsed_duplicate_step_count=9,  g_time_duplicate_step_count=9
+stage 1:  elapsed_duplicate_step_count=3,  g_time_duplicate_step_count=3
+```
+
+早期重复 elapsed 的典型 stage：
+
+```text
+stage 14: first_duplicate_index=2, first_duplicate_value=3.0
+stage 16: first_duplicate_index=3, first_duplicate_value=4.0
+stage 17: first_duplicate_index=1, first_duplicate_value=2.0
+stage 18: first_duplicate_index=1, first_duplicate_value=2.0
+stage 19: first_duplicate_index=1, first_duplicate_value=2.0
+stage 24: first_duplicate_index=1, first_duplicate_value=2.0
+stage 27: first_duplicate_index=1, first_duplicate_value=2.0
+stage 29: first_duplicate_index=1, first_duplicate_value=2.0
+```
+
+这说明重复 elapsed 既可能出现在停泵后早期，也可能出现在停泵后中后期。
+
+### 井口压力 0 值分布
+
+30/30 个 stage 都存在井口压力 0 值：
+
+```text
+wellhead_pressure_zero_stage_counts=1:15, 2:12, 3:9, 4:3, 5:5, 6:16, 7:6, 8:5, 9:24, 10:5, 11:2, 12:4, 13:4, 14:4, 15:3, 16:3, 17:3, 18:3, 19:3, 20:3, 21:3, 22:3, 23:3, 24:3, 25:3, 26:3, 27:3, 28:3, 29:3, 30:3
+```
+
+所有 stage 中：
+
+```text
+wellhead_pressure_trailing_zero_count = wellhead_pressure_zero_count
+```
+
+即井口压力 0 值全部集中在停泵后序列尾部。
+
+示例：
+
+```text
+stage 1:
+wellhead_pressure_zero_count=15
+wellhead_pressure_trailing_zero_count=15
+wellhead_pressure_first_zero_elapsed=1209.0
+wellhead_pressure_last_zero_elapsed=1223.0
+
+stage 29:
+wellhead_pressure_zero_count=3
+wellhead_pressure_trailing_zero_count=3
+wellhead_pressure_first_zero_elapsed=1109.0
+wellhead_pressure_last_zero_elapsed=1111.0
+```
+
+当前估算井底压力定义仍为：
+
+```text
+estimated_bottomhole_pressure_mpa = wellhead_pressure_mpa + liquid_column_pressure_mpa
+```
+
+因此：
+
+```text
+30/30 个 stage 的 estimated_bottomhole_pressure_zero_count 都为 0
+```
+
+这不代表尾部井口压力 0 值没有问题，只代表加上液柱压力后估算井底压力不再为 0。
+
+### 当前结论
+
+Phase 3G 证明：
+
+- 重复 elapsed / 重复 G-time 不是个别现象；
+- well4 的 16/30 个 stage 不满足直接计算 `dP/dG` 的最基本 G-time 严格递增条件；
+- 井口压力尾部 0 值是 30/30 个 stage 的普遍现象。
+
+因此，当前仍然不能直接全井段进入：
+
+- `dP/dG`
+- `G dP/dG`
+- closure diagnostics
+- fracture inversion
+
+即使 14 个 stage 通过当前最基本 derivative-readiness，也不能马上做全井段 closure 或反演，原因是：
+
+1. 16 个 stage 的 G-time 不严格递增；
+2. 30 个 stage 都有尾部井口压力 0 值；
+3. 当前尚未定义重复 timestamp / 重复 G-time 的处理策略；
+4. 当前尚未定义尾部压力 0 值的截断或质量标记策略；
+5. 当前尚未定义 smoothing、重采样或导数算法。
+
+### 后续候选方向
+
+下一步不应直接实现 `dP/dG`。
+
+更合理的下一步是先设计一个极小的数据质量策略审计阶段，例如：
+
+```text
+Phase 3H：设计停泵后有效压力段裁剪与重复时间处理策略
+```
+
+候选策略只能先作为方案比较，不能静默固化：
+
+1. 尾部井口压力 0 值是否作为停泵后有效数据终点；
+2. 重复 elapsed / 重复 G-time 是保留第一个点、保留最后一个点、取均值，还是直接标记为不可导；
+3. 是否按 elapsed 聚合，而不是按 G-time 聚合；
+4. 是否只对导数计算使用裁剪/聚合后的数据，但保留原始数据用于审计；
+5. 是否需要独立输出 data-quality audit，而不是直接输出 closure。
+
+这些策略都会改变导数形状和 closure 判断，因此不能默认静默处理。
