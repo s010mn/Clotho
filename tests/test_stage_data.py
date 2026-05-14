@@ -5,11 +5,26 @@ import pytest
 from clotho.stage_data import (
     InjectionWindowPolicy,
     add_estimated_bottomhole_pressure,
+    compare_injection_duration_policies,
     elapsed_seconds_after,
     find_shut_in_index,
+    find_time_index,
+    picked_duration_seconds,
+    rate_positive_duration_seconds,
     read_stage_curve,
     read_stage_params,
+    volume_over_max_rate_duration_seconds,
 )
+
+
+def _write_teaching_curve(path) -> None:
+    path.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "09:00:00,95.0,10.0,0.0,0.0\n"
+        "09:01:00,96.0,10.0,10.0,10.0\n"
+        "09:03:00,97.0,0.0,30.0,30.0\n",
+        encoding="utf-8",
+    )
 
 
 def test_stage_data_module_has_chinese_docstring() -> None:
@@ -120,6 +135,112 @@ def test_missing_liquid_column_pressure_raises_value_error(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="liquid_column_pressure_mpa"):
         add_estimated_bottomhole_pressure(curve, stage)
+
+
+def test_find_time_index_is_general_exact_match(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_teaching_curve(path)
+
+    curve = read_stage_curve(path)
+
+    assert find_time_index(curve, "09:01:00") == 1
+    with pytest.raises(ValueError):
+        find_time_index(curve, "09:02:00")
+
+
+def test_rate_positive_duration_seconds_uses_real_time_gaps(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_teaching_curve(path)
+
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "09:03:00")
+
+    assert rate_positive_duration_seconds(curve, shut_in_index) == 180.0
+
+
+def test_volume_over_max_rate_duration_seconds_uses_explicit_unit(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_teaching_curve(path)
+
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "09:03:00")
+
+    assert (
+        volume_over_max_rate_duration_seconds(
+            curve,
+            shut_in_index,
+            max_sustained_rate=10.0,
+            rate_time_unit="minute",
+        )
+        == 180.0
+    )
+
+
+def test_volume_over_max_rate_duration_seconds_rejects_bad_inputs(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_teaching_curve(path)
+
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "09:03:00")
+
+    with pytest.raises(ValueError):
+        volume_over_max_rate_duration_seconds(
+            curve,
+            shut_in_index,
+            max_sustained_rate=0.0,
+            rate_time_unit="minute",
+        )
+    with pytest.raises(ValueError):
+        volume_over_max_rate_duration_seconds(
+            curve,
+            shut_in_index,
+            max_sustained_rate=10.0,
+            rate_time_unit="bad_unit",
+        )
+
+
+def test_picked_duration_seconds_uses_human_selected_window(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_teaching_curve(path)
+
+    curve = read_stage_curve(path)
+
+    assert picked_duration_seconds(curve, "09:01:00", "09:03:00") == 120.0
+
+
+def test_compare_injection_duration_policies_returns_two_teaching_strategies(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_teaching_curve(path)
+
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "09:03:00")
+    durations = compare_injection_duration_policies(
+        curve,
+        shut_in_index,
+        max_sustained_rate=10.0,
+        rate_time_unit="minute",
+    )
+
+    assert durations == {
+        "rate_positive_elapsed": 180.0,
+        "volume_over_max_sustained_rate": 180.0,
+    }
+
+
+def test_rate_positive_duration_seconds_handles_midnight_crossing(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    path.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "23:59:00,95.0,10.0,0.0,0.0\n"
+        "00:00:00,96.0,10.0,10.0,10.0\n"
+        "00:02:00,97.0,0.0,30.0,30.0\n",
+        encoding="utf-8",
+    )
+
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "00:02:00")
+
+    assert rate_positive_duration_seconds(curve, shut_in_index) == 180.0
 
 
 def test_missing_shut_in_time_raises_value_error(tmp_path) -> None:

@@ -75,6 +75,22 @@ Clotho 当前命名：
 
 含义：外部给定或人工解释得到的最小应力先验值。它不是 `stage_data.py` 从停泵曲线自动识别出来的闭合压力。
 
+## Phase 2B：泵注时间 / window policy
+
+当前新增的是教学版 tp/window policy，对比不同注入时间定义：
+
+- `rate_positive_elapsed`：停泵前排量大于阈值的真实累计时间；
+- `volume_over_max_sustained_rate`：注入总液量 / 最大稳定排量；
+- `human_picked`：人工选定开始时间和结束时间，例如裂缝打开时间到停泵时间。
+
+注意：
+
+- 这一步仍然不计算 G-function；
+- 不判断哪种 tp 最终正确；
+- 不自动识别裂缝打开时间；
+- 不自动盲选最大稳定排量；
+- 目的只是让后续 G-function 计算前，先把时间尺度讲清楚。
+
 ## 下一步提醒
 
-下一步仍不直接迁移旧库公式。优先候选是教学版 `tp/window policy` 实现和对比，因为泵注时间和停泵窗口会强烈影响后续 G-function 结果。
+下一步仍不直接迁移旧库公式。优先候选是真实/参考井少量 stage 的窗口策略审计：只比较不同 tp 选法，不反演裂缝参数。等 tp 口径稳定后，再进入 G-function formula audit。
