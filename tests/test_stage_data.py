@@ -4,6 +4,7 @@ import pytest
 
 from clotho.stage_data import (
     InjectionWindowPolicy,
+    add_estimated_bottomhole_pressure,
     elapsed_seconds_after,
     find_shut_in_index,
     read_stage_curve,
@@ -18,6 +19,8 @@ def test_stage_data_module_has_chinese_docstring() -> None:
     assert "压裂段参数表" in stage_data.__doc__
     assert "add_pressure" in stage_data.__doc__
     assert "sigma_min" in stage_data.__doc__
+    assert "liquid_column_pressure_mpa" in stage_data.__doc__
+    assert "estimated_bottomhole_pressure_mpa" in stage_data.__doc__
 
 
 def test_read_stage_params_keeps_pressure_and_stress_meaning(tmp_path) -> None:
@@ -33,10 +36,11 @@ def test_read_stage_params_keeps_pressure_and_stress_meaning(tmp_path) -> None:
     assert info.well == "synthetic"
     assert info.stage == 1
     assert info.minimum_stress_prior_mpa == 99.1
-    assert info.pressure_shift_mpa == 42.5
+    assert info.liquid_column_pressure_mpa == 42.5
     assert info.microseismic_length_m == 299.0
     assert info.microseismic_height_m == 53.0
     assert info.electromagnetic_length_m == 294.0
+    assert not hasattr(info, "pressure_shift_mpa")
     assert not hasattr(info, "bottomhole_pressure")
 
 
@@ -69,7 +73,53 @@ def test_stage_curve_uses_real_elapsed_seconds_after_shut_in(tmp_path) -> None:
     assert list(curve["time_text"]) == ["09:00:00", "09:00:02", "09:00:05"]
     assert shut_in_index == 1
     assert elapsed == (0.0, 3.0)
-    assert "bottomhole_pressure" not in curve.columns
+    assert "estimated_bottomhole_pressure_mpa" not in curve.columns
+    assert "bottomhole_pressure_mpa" not in curve.columns
+
+
+def test_add_estimated_bottomhole_pressure_is_explicit(tmp_path) -> None:
+    params = tmp_path / "stage_params.csv"
+    params.write_text(
+        "well,stage,file,shut_in,add_pressure\n"
+        "synthetic,1,stage_data/stage_01.csv,09:00:00,42.5\n",
+        encoding="utf-8",
+    )
+    curve_file = tmp_path / "stage_01.csv"
+    curve_file.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "09:00:00,95.0,0.0,1.0,1.0\n",
+        encoding="utf-8",
+    )
+
+    stage = read_stage_params(params)[0]
+    curve = read_stage_curve(curve_file)
+    corrected = add_estimated_bottomhole_pressure(curve, stage)
+
+    assert "estimated_bottomhole_pressure_mpa" not in curve.columns
+    assert "estimated_bottomhole_pressure_mpa" in corrected.columns
+    assert "bottomhole_pressure_mpa" not in corrected.columns
+    assert corrected["estimated_bottomhole_pressure_mpa"].iloc[0] == 95.0 + 42.5
+
+
+def test_missing_liquid_column_pressure_raises_value_error(tmp_path) -> None:
+    params = tmp_path / "stage_params.csv"
+    params.write_text(
+        "well,stage,file,shut_in,add_pressure\n"
+        "synthetic,1,stage_data/stage_01.csv,09:00:00,\n",
+        encoding="utf-8",
+    )
+    curve_file = tmp_path / "stage_01.csv"
+    curve_file.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "09:00:00,95.0,0.0,1.0,1.0\n",
+        encoding="utf-8",
+    )
+
+    stage = read_stage_params(params)[0]
+    curve = read_stage_curve(curve_file)
+
+    with pytest.raises(ValueError, match="liquid_column_pressure_mpa"):
+        add_estimated_bottomhole_pressure(curve, stage)
 
 
 def test_missing_shut_in_time_raises_value_error(tmp_path) -> None:

@@ -10,9 +10,14 @@
 裂缝反演、相关性分析，也不导出 Excel 或图片。这样做是为了先把“读了什么数据”
 讲清楚，再讨论“怎么算”。
 
-特别注意：`add_pressure` 这里只叫 `pressure_shift_mpa`（压力平移量），不能直接叫
-BHP 或井底压力。因为真正的井底压力换算需要井深、液柱密度、摩阻等信息；简单地把
-井口压力加一个常数，只能说是“经过平移的压力”，不能说已经严格变成井底压力。
+特别注意：`add_pressure` 是原始表中的旧字段名。根据人类说明，它表示液柱压力：
+近似井底压力 = 井口压力 + 液柱压力。
+
+因此代码中把它命名为 `liquid_column_pressure_mpa`。如果需要得到近似井底压力，
+应显式调用 `add_estimated_bottomhole_pressure()`，得到
+`estimated_bottomhole_pressure_mpa`。
+
+这个值不是井下压力计实测 BHP，而是基于井口压力和液柱压力的估算值。
 
 同样，`sigma_min` 这里只叫 `minimum_stress_prior_mpa`（最小应力先验值）。它是外部给定
 或人工解释得到的先验信息，不是本文件从停泵曲线里自动识别出来的闭合压力。
@@ -51,7 +56,7 @@ class StageInfo:
     youngs_modulus_gpa: float | None
     poissons_ratio: float | None
     minimum_stress_prior_mpa: float | None
-    pressure_shift_mpa: float | None
+    liquid_column_pressure_mpa: float | None
     microseismic_length_m: float | None
     microseismic_height_m: float | None
     electromagnetic_length_m: float | None
@@ -69,7 +74,12 @@ _STAGE_PARAM_ALIASES = {
     "youngs_modulus_gpa": ["e_gpa", "youngs_modulus_gpa"],
     "poissons_ratio": ["nu", "poissons_ratio"],
     "minimum_stress_prior_mpa": ["sigma_min", "minimum_stress_prior_mpa"],
-    "pressure_shift_mpa": ["add_pressure", "pressure_shift_mpa"],
+    "liquid_column_pressure_mpa": [
+        "add_pressure",
+        "pressure_shift_mpa",
+        "liquid_column_pressure_mpa",
+        "hydrostatic_pressure_mpa",
+    ],
     "microseismic_length_m": ["微地震缝长", "microseismic_length_m"],
     "microseismic_height_m": ["微地震缝高", "microseismic_height_m"],
     "electromagnetic_length_m": ["广域电磁缝长", "electromagnetic_length_m", "em_length_m"],
@@ -103,7 +113,7 @@ def read_stage_params(path: str | Path) -> list[StageInfo]:
                 youngs_modulus_gpa=_optional_float(raw, "youngs_modulus_gpa"),
                 poissons_ratio=_optional_float(raw, "poissons_ratio"),
                 minimum_stress_prior_mpa=_optional_float(raw, "minimum_stress_prior_mpa"),
-                pressure_shift_mpa=_optional_float(raw, "pressure_shift_mpa"),
+                liquid_column_pressure_mpa=_optional_float(raw, "liquid_column_pressure_mpa"),
                 microseismic_length_m=_optional_float(raw, "microseismic_length_m"),
                 microseismic_height_m=_optional_float(raw, "microseismic_height_m"),
                 electromagnetic_length_m=_optional_float(raw, "electromagnetic_length_m"),
@@ -125,6 +135,27 @@ def read_stage_curve(path: str | Path) -> pd.DataFrame:
         curve[name] = _numeric_column(raw, name)
 
     return curve
+
+
+# 输入：井口压力曲线和段参数。输出：增加 estimated_bottomhole_pressure_mpa 的新表。
+def add_estimated_bottomhole_pressure(curve: pd.DataFrame, stage: StageInfo) -> pd.DataFrame:
+    """在曲线表中增加“近似井底压力”。
+
+    近似井底压力 = 井口压力 + 液柱压力。
+
+    注意：
+    - 这里的液柱压力来自 stage_params.csv 里的 add_pressure；
+    - 这不是井下压力计实测值；
+    - 所以列名必须带 estimated，提醒读者这是估算值。
+    """
+    if stage.liquid_column_pressure_mpa is None:
+        raise ValueError("缺少液柱压力 liquid_column_pressure_mpa，不能估算井底压力")
+
+    result = curve.copy()
+    result["estimated_bottomhole_pressure_mpa"] = (
+        result["wellhead_pressure_mpa"] + stage.liquid_column_pressure_mpa
+    )
+    return result
 
 
 # 输入：规范曲线表和停泵时刻字符串。输出：停泵时刻所在的唯一行号。
