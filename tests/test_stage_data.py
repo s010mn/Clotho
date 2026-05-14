@@ -20,9 +20,20 @@ from clotho.stage_data import (
 def _write_teaching_curve(path) -> None:
     path.write_text(
         "time,wellhead_pressure,rate,stage_volume,total_volume\n"
-        "09:00:00,95.0,10.0,0.0,0.0\n"
-        "09:01:00,96.0,10.0,10.0,10.0\n"
-        "09:03:00,97.0,0.0,30.0,30.0\n",
+        "09:00:00,95.0,10.0,0.0,1000.0\n"
+        "09:01:00,96.0,10.0,10.0,1010.0\n"
+        "09:03:00,97.0,0.0,30.0,1030.0\n",
+        encoding="utf-8",
+    )
+
+
+def _write_reset_volume_curve(path) -> None:
+    path.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "09:00:00,95.0,10.0,0.0,1000.0\n"
+        "09:01:00,96.0,10.0,10.0,1010.0\n"
+        "09:02:00,96.5,10.0,0.0,1020.0\n"
+        "09:03:00,97.0,0.0,5.0,1030.0\n",
         encoding="utf-8",
     )
 
@@ -158,22 +169,74 @@ def test_rate_positive_duration_seconds_uses_real_time_gaps(tmp_path) -> None:
     assert rate_positive_duration_seconds(curve, shut_in_index) == 180.0
 
 
-def test_volume_over_max_rate_duration_seconds_uses_explicit_unit(tmp_path) -> None:
+def test_volume_over_max_rate_duration_seconds_uses_explicit_total_volume(tmp_path) -> None:
     path = tmp_path / "stage_01.csv"
     _write_teaching_curve(path)
 
     curve = read_stage_curve(path)
     shut_in_index = find_shut_in_index(curve, "09:03:00")
 
-    assert (
+    duration = volume_over_max_rate_duration_seconds(
+        curve,
+        shut_in_index,
+        max_sustained_rate=10.0,
+        rate_time_unit="minute",
+        volume_column="total_volume",
+    )
+
+    assert duration == 180.0
+
+
+def test_stage_volume_reset_raises_value_error(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_reset_volume_curve(path)
+
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "09:03:00")
+
+    with pytest.raises(ValueError, match="stage_volume|回落|重置"):
         volume_over_max_rate_duration_seconds(
             curve,
             shut_in_index,
             max_sustained_rate=10.0,
             rate_time_unit="minute",
+            volume_column="stage_volume",
         )
-        == 180.0
+
+
+def test_total_volume_works_when_stage_volume_resets(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_reset_volume_curve(path)
+
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "09:03:00")
+
+    duration = volume_over_max_rate_duration_seconds(
+        curve,
+        shut_in_index,
+        max_sustained_rate=10.0,
+        rate_time_unit="minute",
+        volume_column="total_volume",
     )
+
+    assert duration == 180.0
+
+
+def test_bad_volume_column_raises_value_error(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_teaching_curve(path)
+
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "09:03:00")
+
+    with pytest.raises(ValueError, match="bad_volume"):
+        volume_over_max_rate_duration_seconds(
+            curve,
+            shut_in_index,
+            max_sustained_rate=10.0,
+            rate_time_unit="minute",
+            volume_column="bad_volume",
+        )
 
 
 def test_volume_over_max_rate_duration_seconds_rejects_bad_inputs(tmp_path) -> None:
@@ -189,6 +252,7 @@ def test_volume_over_max_rate_duration_seconds_rejects_bad_inputs(tmp_path) -> N
             shut_in_index,
             max_sustained_rate=0.0,
             rate_time_unit="minute",
+            volume_column="total_volume",
         )
     with pytest.raises(ValueError):
         volume_over_max_rate_duration_seconds(
@@ -196,6 +260,7 @@ def test_volume_over_max_rate_duration_seconds_rejects_bad_inputs(tmp_path) -> N
             shut_in_index,
             max_sustained_rate=10.0,
             rate_time_unit="bad_unit",
+            volume_column="total_volume",
         )
 
 
@@ -219,6 +284,7 @@ def test_compare_injection_duration_policies_returns_two_teaching_strategies(tmp
         shut_in_index,
         max_sustained_rate=10.0,
         rate_time_unit="minute",
+        volume_column="total_volume",
     )
 
     assert durations == {
@@ -231,9 +297,9 @@ def test_rate_positive_duration_seconds_handles_midnight_crossing(tmp_path) -> N
     path = tmp_path / "stage_01.csv"
     path.write_text(
         "time,wellhead_pressure,rate,stage_volume,total_volume\n"
-        "23:59:00,95.0,10.0,0.0,0.0\n"
-        "00:00:00,96.0,10.0,10.0,10.0\n"
-        "00:02:00,97.0,0.0,30.0,30.0\n",
+        "23:59:00,95.0,10.0,0.0,1000.0\n"
+        "00:00:00,96.0,10.0,10.0,1010.0\n"
+        "00:02:00,97.0,0.0,30.0,1030.0\n",
         encoding="utf-8",
     )
 

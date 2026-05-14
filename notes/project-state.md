@@ -91,6 +91,23 @@ Clotho 当前命名：
 - 不自动盲选最大稳定排量；
 - 目的只是让后续 G-function 计算前，先把时间尺度讲清楚。
 
+## Phase 2C：well4 体积列与窗口策略审计
+
+本地审计参考库 `well4` 后得到：
+
+- `stage_volume` 在 30/30 个 stage 的停泵前都有回落或重置；
+- `total_volume` 在 30/30 个 stage 的停泵前没有回落；
+- 用 `total_volume` 推断，`rate / (dV/dt)` 的中位数约 60，说明 rate 更像 m³/min，而不是 m³/s；
+- `rate > 0` 累计法通常偏长；
+- `rate > 10` 累计法与 `total_volume / P95 正排量` 的时间尺度更接近。
+
+当前结论：
+
+- 不要默认用 `stage_volume` 代表总注入量；
+- 体积 / 最大稳定排量法必须显式选择 `volume_column`；
+- 对 well4 这类数据，`total_volume` 是更合理的累计注入量候选；
+- 这仍然不是 G-function 结论，只是进入 G-function 前的数据口径审计。
+
 ## 下一步提醒
 
 下一步仍不直接迁移旧库公式。优先候选是真实/参考井少量 stage 的窗口策略审计：只比较不同 tp 选法，不反演裂缝参数。等 tp 口径稳定后，再进入 G-function formula audit。

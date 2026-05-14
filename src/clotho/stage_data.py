@@ -24,6 +24,11 @@
 
 本文件还提供教学版泵注时间 tp/window policy：只比较不同时间尺度的定义，
 不判断哪一种一定正确，也不计算 G-function。
+
+体积 / 最大稳定排量法需要一个“累计注入体积”。真实数据里，不能默认
+`stage_volume` 就是总注入量。well4 审计显示，`stage_volume` 在停泵前会回落或重置；
+`total_volume` 更像单调累计列。因此代码要求调用者显式传入 `volume_column`。
+如果选中的体积列在停泵前出现回落，函数会报错。
 """
 
 from __future__ import annotations
@@ -222,40 +227,73 @@ def rate_positive_duration_seconds(
     return float(duration)
 
 
-# 输入：停泵行、人工给定最大稳定排量和排量时间单位。输出：体积/排量法得到的秒数。
+# 输入：曲线、行号和体积列名。输出：从起点到该行的累计注入量。
+def injected_volume_until_index(
+    curve: pd.DataFrame,
+    index: int,
+    *,
+    volume_column: str,
+    initial_volume: float | None = None,
+) -> float:
+    """用指定体积列计算从曲线起点到某一行的累计注入量。
+
+    真实数据里，不能默认相信 `stage_volume` 一定是累计总液量。例如 well4 审计显示，
+    `stage_volume` 会回落或重置；`total_volume` 更像单调累计列。
+
+    所以这里要求调用者显式选择 volume_column。
+    """
+    _validate_row_index(curve, index, "index")
+    if volume_column not in curve.columns:
+        raise ValueError(f"体积列 {volume_column!r} 不存在")
+
+    volume_until_index = curve[volume_column].iloc[: index + 1].to_numpy(dtype=float)
+    if np.isnan(volume_until_index).any():
+        raise ValueError(f"体积列 {volume_column!r} 在停泵前含有 NaN")
+
+    drops = np.diff(volume_until_index) < -1e-9
+    if drops.any():
+        raise ValueError(f"体积列 {volume_column!r} 在停泵前出现回落或重置")
+
+    start_volume = volume_until_index[0] if initial_volume is None else float(initial_volume)
+    if not np.isfinite(start_volume):
+        raise ValueError("initial_volume 必须是有限数字")
+
+    injected_volume = float(volume_until_index[-1] - start_volume)
+    if injected_volume < 0.0:
+        raise ValueError("注入体积不能小于 0，请检查 initial_volume")
+    return injected_volume
+
+
+# 输入：停泵行、体积列、最大稳定排量和排量时间单位。输出：体积/排量法得到的秒数。
 def volume_over_max_rate_duration_seconds(
     curve: pd.DataFrame,
     shut_in_index: int,
     *,
     max_sustained_rate: float,
     rate_time_unit: str,
-    initial_stage_volume: float = 0.0,
+    volume_column: str,
+    initial_volume: float | None = None,
 ) -> float:
     """体积 / 最大稳定排量法。
 
     对应 DFIT/G-function 实用解释资料里的建议：tp 不一定取字面泵注时长，
     也可以取“总注入量 / 最大稳定排量”。
 
-    注意：最大稳定排量必须由调用者显式传入。本函数不从曲线里盲选最大值，
-    因为单个峰值可能只是噪声或短暂瞬时排量，不一定代表稳定排量。
+    注意：
+    - 最大稳定排量必须由调用者显式传入，本函数不从曲线里盲选最大值；
+    - 累计体积列也必须由调用者显式传入，例如 `volume_column="total_volume"`；
+    - 如果选中的体积列在停泵前回落或重置，函数会报错。
     """
-    _validate_row_index(curve, shut_in_index, "shut_in_index")
     max_rate = float(max_sustained_rate)
     if not np.isfinite(max_rate) or max_rate <= 0.0:
         raise ValueError("max_sustained_rate 必须大于 0")
 
-    initial_volume = float(initial_stage_volume)
-    if not np.isfinite(initial_volume):
-        raise ValueError("initial_stage_volume 必须是有限数字")
-
-    stage_volume = float(curve["stage_volume"].iloc[shut_in_index])
-    if not np.isfinite(stage_volume):
-        raise ValueError("停泵行 stage_volume 不是有限数字")
-
-    injected_volume = stage_volume - initial_volume
-    if injected_volume < 0.0:
-        raise ValueError("注入体积不能小于 0，请检查 initial_stage_volume")
-
+    injected_volume = injected_volume_until_index(
+        curve,
+        shut_in_index,
+        volume_column=volume_column,
+        initial_volume=initial_volume,
+    )
     seconds_per_rate_unit = _seconds_per_rate_unit(rate_time_unit)
     return float(injected_volume / max_rate * seconds_per_rate_unit)
 
@@ -267,7 +305,8 @@ def compare_injection_duration_policies(
     *,
     max_sustained_rate: float,
     rate_time_unit: str,
-    initial_stage_volume: float = 0.0,
+    volume_column: str,
+    initial_volume: float | None = None,
     min_rate: float = 0.0,
 ) -> dict[str, float]:
     """对比两个不需要人工起点的 tp 策略。
@@ -286,7 +325,8 @@ def compare_injection_duration_policies(
             shut_in_index,
             max_sustained_rate=max_sustained_rate,
             rate_time_unit=rate_time_unit,
-            initial_stage_volume=initial_stage_volume,
+            volume_column=volume_column,
+            initial_volume=initial_volume,
         ),
     }
 
