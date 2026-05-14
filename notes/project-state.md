@@ -125,6 +125,7 @@ Clotho 当前命名：
 - 不反演裂缝参数；
 - 不复制真实数据；
 - `volume_column` 和 `max_sustained_rate` 必须显式传入；
+- 输出必须回显关键输入参数，包括 `volume_column`、`min_rate`、`max_sustained_rate`、`rate_time_unit`。否则后续审计记录无法独立解释每个 tp 候选值是如何得到的；
 - 这个命令只是为了让窗口策略审计可复现。
 
 ## 下一步提醒

@@ -94,11 +94,15 @@ def _run_window_audit(args: argparse.Namespace) -> int:
     print(f"shut_in_time={stage.shut_in_time}")
     print(f"shut_in_index={shut_in_index}")
     print(f"volume_column={args.volume_column}")
+    print(f"min_rate={args.min_rate}")
+    print(f"max_sustained_rate={args.max_sustained_rate}")
+    print(f"rate_time_unit={args.rate_time_unit}")
     print(f"rate_positive_elapsed_seconds={rate_positive_seconds}")
     print(f"volume_over_max_sustained_rate_seconds={volume_rate_seconds}")
 
     if args.picked_start_time is not None:
         picked_seconds = picked_duration_seconds(curve, args.picked_start_time, stage.shut_in_time)
+        print(f"picked_start_time={args.picked_start_time}")
         print(f"picked_duration_seconds={picked_seconds}")
 
     return 0

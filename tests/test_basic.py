@@ -41,28 +41,28 @@ def _write_window_audit_inputs(tmp_path) -> tuple[object, object]:
     return stage_params, tmp_path
 
 
+def _window_audit_args(stage_params, well_root) -> list[str]:
+    return [
+        "window-audit",
+        "--stage-params",
+        str(stage_params),
+        "--well-root",
+        str(well_root),
+        "--stage",
+        "1",
+        "--volume-column",
+        "total_volume",
+        "--max-sustained-rate",
+        "10.0",
+        "--rate-time-unit",
+        "minute",
+    ]
+
+
 def test_window_audit_cli_prints_duration_choices(tmp_path, capsys) -> None:
     stage_params, well_root = _write_window_audit_inputs(tmp_path)
 
-    exit_code = main(
-        [
-            "window-audit",
-            "--stage-params",
-            str(stage_params),
-            "--well-root",
-            str(well_root),
-            "--stage",
-            "1",
-            "--volume-column",
-            "total_volume",
-            "--max-sustained-rate",
-            "10.0",
-            "--rate-time-unit",
-            "minute",
-            "--picked-start-time",
-            "09:01:00",
-        ]
-    )
+    exit_code = main(_window_audit_args(stage_params, well_root) + ["--picked-start-time", "09:01:00"])
 
     captured = capsys.readouterr()
 
@@ -70,34 +70,37 @@ def test_window_audit_cli_prints_duration_choices(tmp_path, capsys) -> None:
     assert "well=synthetic" in captured.out
     assert "stage=1" in captured.out
     assert "volume_column=total_volume" in captured.out
+    assert "min_rate=0.0" in captured.out
+    assert "max_sustained_rate=10.0" in captured.out
+    assert "rate_time_unit=minute" in captured.out
     assert "rate_positive_elapsed_seconds=180.0" in captured.out
     assert "volume_over_max_sustained_rate_seconds=180.0" in captured.out
+    assert "picked_start_time=09:01:00" in captured.out
     assert "picked_duration_seconds=120.0" in captured.out
 
 
 def test_window_audit_cli_omits_picked_duration_when_not_requested(tmp_path, capsys) -> None:
     stage_params, well_root = _write_window_audit_inputs(tmp_path)
 
-    exit_code = main(
-        [
-            "window-audit",
-            "--stage-params",
-            str(stage_params),
-            "--well-root",
-            str(well_root),
-            "--stage",
-            "1",
-            "--volume-column",
-            "total_volume",
-            "--max-sustained-rate",
-            "10.0",
-            "--rate-time-unit",
-            "minute",
-        ]
-    )
+    exit_code = main(_window_audit_args(stage_params, well_root))
 
     captured = capsys.readouterr()
 
     assert exit_code == 0
+    assert "min_rate=0.0" in captured.out
+    assert "max_sustained_rate=10.0" in captured.out
+    assert "rate_time_unit=minute" in captured.out
     assert "volume_over_max_sustained_rate_seconds=180.0" in captured.out
-    assert "picked_duration_seconds" not in captured.out
+    assert "picked_start_time=" not in captured.out
+    assert "picked_duration_seconds=" not in captured.out
+
+
+def test_window_audit_cli_echoes_custom_min_rate(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_window_audit_inputs(tmp_path)
+
+    exit_code = main(_window_audit_args(stage_params, well_root) + ["--min-rate", "10.0"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "min_rate=10.0" in captured.out
