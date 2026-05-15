@@ -794,6 +794,80 @@ class TestPhysicalPKN:
         assert result["stable_segment_status"] == "ok"
         assert result["pkn_C_status"] == "ok"
         assert result["pkn_cluster_count"] == 4
+        assert result["pkn_H_w_source"] == "cli_or_grid"
+
+    def test_physical_volume_balance_default_height_source(self):
+        n = 50
+        tp = 600.0
+        elapsed = np.arange(1, n + 1, dtype=float)
+        g_time = np.asarray(nolte_g_time(elapsed / tp, 0.8), dtype=float)
+        pressure = 120.0 - 3.0 * g_time
+        E_prime = 33.3 * 1000.0 / (1.0 - 0.23 ** 2)
+
+        result = physical_pkn_volume_balance(
+            n_clusters=4,
+            cluster_spacings_m=8.4,
+            fleak=0.5,
+            E_prime_mpa=E_prime,
+            closure_pressure_mpa=110.0,
+            minimum_stress_prior_mpa=99.1,
+            perforation_friction_mpa=0.0,
+            g_time=g_time,
+            pressure_mpa=pressure,
+            elapsed_seconds=elapsed,
+            closure_index=40,
+            tp_seconds=tp,
+            g_function_m=0.8,
+            effective_injected_volume_m3=3000.0,
+            alpha=1.0,
+        )
+
+        assert result["pkn_volume_status"] == "ok"
+        assert result["pkn_H_w_m"] == 50.0
+        assert result["pkn_H_w_source"] == "default_50m"
+
+    def test_height_changes_intermediates_but_stage_volume_cancels(self):
+        n = 50
+        tp = 600.0
+        elapsed = np.arange(1, n + 1, dtype=float)
+        g_time = np.asarray(nolte_g_time(elapsed / tp, 0.8), dtype=float)
+        pressure = 120.0 - 3.0 * g_time
+        E_prime = 33.3 * 1000.0 / (1.0 - 0.23 ** 2)
+        common = dict(
+            n_clusters=4,
+            cluster_spacings_m=8.4,
+            fleak=0.5,
+            E_prime_mpa=E_prime,
+            closure_pressure_mpa=110.0,
+            minimum_stress_prior_mpa=99.1,
+            perforation_friction_mpa=0.0,
+            g_time=g_time,
+            pressure_mpa=pressure,
+            elapsed_seconds=elapsed,
+            closure_index=40,
+            tp_seconds=tp,
+            g_function_m=0.8,
+            effective_injected_volume_m3=3000.0,
+            alpha=0.0,
+            flow_allocation="uniform",
+            C_coupling="stage-constant",
+        )
+
+        low = physical_pkn_volume_balance(**common, H_w_m=30.0)
+        high = physical_pkn_volume_balance(**common, H_w_m=60.0)
+
+        assert low["pkn_volume_status"] == "ok"
+        assert high["pkn_volume_status"] == "ok"
+        assert low["pkn_H_p_m"] == pytest.approx(15.0)
+        assert high["pkn_H_p_m"] == pytest.approx(30.0)
+        assert high["pkn_C_stage"] > low["pkn_C_stage"]
+        assert high["pkn_half_length_mean_m"] < low["pkn_half_length_mean_m"]
+        assert high["pkn_fracture_volume_m3"] == pytest.approx(
+            low["pkn_fracture_volume_m3"], rel=1e-9
+        )
+        assert high["pkn_shutin_fluid_efficiency"] == pytest.approx(
+            low["pkn_shutin_fluid_efficiency"], rel=1e-9
+        )
 
     def test_physical_pkn_no_fallback_to_mvp(self):
         n = 10
@@ -855,6 +929,7 @@ class TestPhysicalPKN:
             "--g-time-m", "0.8",
             "--closure-min-elapsed-seconds", "5",
             "--stress-shadow-alpha", "1.0",
+            "--pkn-Hw-m", "60",
         ])
 
         assert exit_code == 0
@@ -867,6 +942,11 @@ class TestPhysicalPKN:
         assert "stress_shadow_status" in summary.columns
         assert "stable_segment_status" in summary.columns
         assert "legacy_mvp_pkn_fracture_volume_m3" in summary.columns
+        assert summary["pkn_H_w_m"].iloc[0] == pytest.approx(60.0)
+        assert summary["pkn_H_w_source"].iloc[0] == "cli_or_grid"
+        assert summary["pkn_H_p_m"].iloc[0] == pytest.approx(
+            summary["pkn_fleak"].iloc[0] * 60.0
+        )
         assert (summary["closure_is_candidate"] == True).all()  # noqa: E712
         assert (summary["closure_is_final_interpretation"] == False).all()  # noqa: E712
 

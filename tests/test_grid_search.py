@@ -316,6 +316,7 @@ def _trivial_grid(**overrides):
         flow_allocation=["stress-shadow"],
         flow_allocation_exponent=[1.0],
         stress_shadow_alpha=[1.0],
+        pkn_H_w_m=[50.0],
         fleak=[0.5],
         C_multiplier=[1.0],
         effective_volume_factor=[1.0],
@@ -337,6 +338,29 @@ def _trivial_grid(**overrides):
 
 def test_count_trivial_grid_is_one():
     assert count_grid_cases(**_trivial_grid()) == 1
+
+
+def test_count_height_axis_expands_cases():
+    grid = _trivial_grid(pkn_H_w_m=[30.0, 50.0, 60.0])
+    assert count_grid_cases(**grid) == 3
+    cases = list(enumerate_grid_cases(**grid))
+    assert [c.pkn_H_w_m for c in cases] == [30.0, 50.0, 60.0]
+
+
+def test_cli_parser_accepts_pkn_Hw_grid():
+    from clotho.cli import build_parser
+
+    args = build_parser().parse_args([
+        "pkn-grid-search",
+        "--stage-params", "/tmp/stage_params.csv",
+        "--well-root", "/tmp/well4",
+        "--manifest", "/tmp/manifest.csv",
+        "--observations", "/tmp/observations.csv",
+        "--output-dir", "/tmp/grid",
+        "--pkn-Hw-grid", "30,35,40,45,50,55,60",
+    ])
+
+    assert args.pkn_H_w_grid == "30,35,40,45,50,55,60"
 
 
 def test_count_perf_modes_expand_correctly():
@@ -422,6 +446,7 @@ def test_write_outputs_smoke(tmp_path):
             "flow_allocation": "stress-shadow",
             "flow_allocation_exponent": 1.0,
             "stress_shadow_alpha": 1.0,
+            "pkn_H_w_m": 50.0,
             "fleak": 0.5,
             "C_multiplier": 1.0,
             "effective_volume_factor": 1.0,
@@ -457,6 +482,65 @@ def test_write_outputs_smoke(tmp_path):
     assert not best.empty
     importance = pd.read_csv(paths["grid_parameter_importance"])
     assert "parameter" in importance.columns
+
+
+def test_write_outputs_builds_Hw_cancellation_audit(tmp_path):
+    common = {
+        "closure_min_elapsed_seconds": 15.0,
+        "pkn_C_coupling": "stage-constant",
+        "flow_allocation": "stress-shadow",
+        "flow_allocation_exponent": 1.0,
+        "stress_shadow_alpha": 0.0,
+        "fleak": 0.5,
+        "C_multiplier": 1.0,
+        "effective_volume_factor": 1.0,
+        "wellbore_storage_coeff_m3_per_mpa": 0.0,
+        "perf_friction_mode": "none",
+        "perf_friction_constant_mpa": 0.0,
+        "perforation_diameter_mm": float("nan"),
+        "perforations_per_cluster": 0,
+        "perforation_Cd": float("nan"),
+        "fluid_density_kg_m3": float("nan"),
+        "stable_min_r2": 0.5,
+        "stable_min_points": 8,
+        "stable_window_mode": "longest",
+        "tp_multiplier": 1.0,
+        "n_stages_in_correlation": 28,
+        "physical_plausibility_pass": True,
+    }
+    cases_df = pd.DataFrame.from_records([
+        {
+            **common,
+            "case_id": 0,
+            "pkn_H_w_m": 30.0,
+            "median_pkn_C_stage": 0.003,
+            "median_pkn_half_length_mean_m": 400.0,
+            "median_pkn_fracture_volume_m3": 100.0,
+            "median_shutin_fluid_efficiency": 0.2,
+        },
+        {
+            **common,
+            "case_id": 1,
+            "pkn_H_w_m": 60.0,
+            "median_pkn_C_stage": 0.006,
+            "median_pkn_half_length_mean_m": 100.0,
+            "median_pkn_fracture_volume_m3": 100.0,
+            "median_shutin_fluid_efficiency": 0.2,
+        },
+    ])
+
+    paths = write_outputs(tmp_path, cases_df, pd.DataFrame())
+    audit = pd.read_csv(paths["Hw_cancellation_audit"])
+
+    assert len(audit) == 2
+    assert set(audit["pkn_H_p_m"]) == {15.0, 30.0}
+    assert (audit["volume_rel_range"] < 1e-12).all()
+    assert (audit["C_stage_rel_range"] > 0).all()
+    assert (audit["half_length_rel_range"] > 0).all()
+    assert set(audit["pkn_H_w_volume_sensitivity_flag"]) == {
+        "H_w_cancels_in_stage_total_volume_but_changes_intermediates"
+    }
+    assert paths["figures"].is_dir()
 
 
 def test_split_outputs_filters_low_pearson(tmp_path):

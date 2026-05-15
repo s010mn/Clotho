@@ -15,8 +15,9 @@ Important non-goals
 
 Conventions
 -----------
-* I_F and H_w are fixed at the project-required values (PHYSICAL_PKN_IF,
-  PHYSICAL_PKN_HW_M) and are NOT search axes.
+* I_F is fixed at the project-required value (PHYSICAL_PKN_IF) and is NOT a
+  search axis. H_w defaults to PHYSICAL_PKN_HW_M=50 m, but Phase 5F.1 exposes
+  H_w as an explicit grid axis so 30-60 m sensitivity can be audited.
 * Perforation friction can be supplied four ways:
     - none: ΔP_perf = 0 everywhere.
     - constant: ΔP_perf = a constant from the grid (legacy sensitivity).
@@ -298,6 +299,7 @@ class GridCase:
     flow_allocation: str
     flow_allocation_exponent: float
     stress_shadow_alpha: float
+    pkn_H_w_m: float
     fleak: float
     C_multiplier: float
     effective_volume_factor: float
@@ -321,6 +323,7 @@ def count_grid_cases(
     flow_allocation: Sequence[str],
     flow_allocation_exponent: Sequence[float],
     stress_shadow_alpha: Sequence[float],
+    pkn_H_w_m: Sequence[float],
     fleak: Sequence[float],
     C_multiplier: Sequence[float],
     effective_volume_factor: Sequence[float],
@@ -354,6 +357,7 @@ def count_grid_cases(
         * max(1, len(flow_allocation))
         * max(1, len(flow_allocation_exponent))
         * max(1, len(stress_shadow_alpha))
+        * max(1, len(pkn_H_w_m))
         * max(1, len(fleak))
         * max(1, len(C_multiplier))
         * max(1, len(effective_volume_factor))
@@ -373,6 +377,7 @@ def enumerate_grid_cases(
     flow_allocation: Sequence[str],
     flow_allocation_exponent: Sequence[float],
     stress_shadow_alpha: Sequence[float],
+    pkn_H_w_m: Sequence[float],
     fleak: Sequence[float],
     C_multiplier: Sequence[float],
     effective_volume_factor: Sequence[float],
@@ -395,56 +400,58 @@ def enumerate_grid_cases(
             for fa in flow_allocation:
                 for fae in flow_allocation_exponent:
                     for ssa in stress_shadow_alpha:
-                        for fl in fleak:
-                            for cm in C_multiplier:
-                                for evf in effective_volume_factor:
-                                    for wbs in wellbore_storage_coeff_m3_per_mpa:
-                                        for mode in perf_friction_mode:
-                                            if mode == "none":
-                                                perf_iter: list[
-                                                    tuple[float, float, int, float, float]
-                                                ] = [(0.0, float("nan"), 0, float("nan"), float("nan"))]
-                                            elif mode == "constant":
-                                                perf_iter = [
-                                                    (p, float("nan"), 0, float("nan"), float("nan"))
-                                                    for p in perf_friction_constant_mpa
-                                                ]
-                                            else:
-                                                perf_iter = [
-                                                    (float("nan"), d, n, cd, rho)
-                                                    for d in perforation_diameter_mm
-                                                    for n in perforations_per_cluster
-                                                    for cd in perforation_Cd
-                                                    for rho in fluid_density_kg_m3
-                                                ]
-                                            for (pc, pd_mm, pn, pcd, prho) in perf_iter:
-                                                for smr in stable_min_r2:
-                                                    for smp in stable_min_points:
-                                                        for swm in stable_window_mode:
-                                                            for tpm in tp_multiplier:
-                                                                yield GridCase(
-                                                                    case_id=case_id,
-                                                                    closure_min_elapsed_seconds=float(cme),
-                                                                    pkn_C_coupling=str(cc),
-                                                                    flow_allocation=str(fa),
-                                                                    flow_allocation_exponent=float(fae),
-                                                                    stress_shadow_alpha=float(ssa),
-                                                                    fleak=float(fl),
-                                                                    C_multiplier=float(cm),
-                                                                    effective_volume_factor=float(evf),
-                                                                    wellbore_storage_coeff_m3_per_mpa=float(wbs),
-                                                                    perf_friction_mode=str(mode),
-                                                                    perf_friction_constant_mpa=float(pc),
-                                                                    perforation_diameter_mm=float(pd_mm),
-                                                                    perforations_per_cluster=int(pn),
-                                                                    perforation_Cd=float(pcd),
-                                                                    fluid_density_kg_m3=float(prho),
-                                                                    stable_min_r2=float(smr),
-                                                                    stable_min_points=int(smp),
-                                                                    stable_window_mode=str(swm),
-                                                                    tp_multiplier=float(tpm),
-                                                                )
-                                                                case_id += 1
+                        for hw in pkn_H_w_m:
+                            for fl in fleak:
+                                for cm in C_multiplier:
+                                    for evf in effective_volume_factor:
+                                        for wbs in wellbore_storage_coeff_m3_per_mpa:
+                                            for mode in perf_friction_mode:
+                                                if mode == "none":
+                                                    perf_iter: list[
+                                                        tuple[float, float, int, float, float]
+                                                    ] = [(0.0, float("nan"), 0, float("nan"), float("nan"))]
+                                                elif mode == "constant":
+                                                    perf_iter = [
+                                                        (p, float("nan"), 0, float("nan"), float("nan"))
+                                                        for p in perf_friction_constant_mpa
+                                                    ]
+                                                else:
+                                                    perf_iter = [
+                                                        (float("nan"), d, n, cd, rho)
+                                                        for d in perforation_diameter_mm
+                                                        for n in perforations_per_cluster
+                                                        for cd in perforation_Cd
+                                                        for rho in fluid_density_kg_m3
+                                                    ]
+                                                for (pc, pd_mm, pn, pcd, prho) in perf_iter:
+                                                    for smr in stable_min_r2:
+                                                        for smp in stable_min_points:
+                                                            for swm in stable_window_mode:
+                                                                for tpm in tp_multiplier:
+                                                                    yield GridCase(
+                                                                        case_id=case_id,
+                                                                        closure_min_elapsed_seconds=float(cme),
+                                                                        pkn_C_coupling=str(cc),
+                                                                        flow_allocation=str(fa),
+                                                                        flow_allocation_exponent=float(fae),
+                                                                        stress_shadow_alpha=float(ssa),
+                                                                        pkn_H_w_m=float(hw),
+                                                                        fleak=float(fl),
+                                                                        C_multiplier=float(cm),
+                                                                        effective_volume_factor=float(evf),
+                                                                        wellbore_storage_coeff_m3_per_mpa=float(wbs),
+                                                                        perf_friction_mode=str(mode),
+                                                                        perf_friction_constant_mpa=float(pc),
+                                                                        perforation_diameter_mm=float(pd_mm),
+                                                                        perforations_per_cluster=int(pn),
+                                                                        perforation_Cd=float(pcd),
+                                                                        fluid_density_kg_m3=float(prho),
+                                                                        stable_min_r2=float(smr),
+                                                                        stable_min_points=int(smp),
+                                                                        stable_window_mode=str(swm),
+                                                                        tp_multiplier=float(tpm),
+                                                                    )
+                                                                    case_id += 1
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +811,7 @@ def _run_one_case(
             tp_multiplier=case.tp_multiplier,
             effective_volume_factor=case.effective_volume_factor,
             fleak_override=case.fleak,
+            pkn_H_w_m=case.pkn_H_w_m,
             C_multiplier=case.C_multiplier,
             stable_min_elapsed_seconds=case.closure_min_elapsed_seconds,
             stable_min_points=case.stable_min_points,
@@ -826,6 +834,18 @@ def _run_one_case(
 
     summary: pd.DataFrame = result["summary"]
     eff_stats, corr_rows = evaluate_case_correlations(summary, observation_columns)
+    for col, stat_name in [
+        ("pkn_C_stage", "median_pkn_C_stage"),
+        ("pkn_half_length_mean_m", "median_pkn_half_length_mean_m"),
+        ("pkn_fracture_volume_m3", "median_pkn_fracture_volume_m3"),
+        ("pkn_H_p_m", "median_pkn_H_p_m"),
+        ("pkn_fleak", "median_pkn_fleak"),
+    ]:
+        if col in summary.columns:
+            vals = pd.to_numeric(summary[col], errors="coerce")
+            eff_stats[stat_name] = float(np.nanmedian(vals)) if vals.notna().any() else float("nan")
+        else:
+            eff_stats[stat_name] = float("nan")
     stats_for_plausibility = dict(eff_stats)
     stats_for_plausibility["C_multiplier_applied"] = case.C_multiplier
     physical_pass, fail_reasons = physical_plausibility_pass(stats_for_plausibility, criteria)
@@ -941,6 +961,7 @@ def compute_parameter_importance(
         "flow_allocation",
         "flow_allocation_exponent",
         "stress_shadow_alpha",
+        "pkn_H_w_m",
         "fleak",
         "C_multiplier",
         "effective_volume_factor",
@@ -981,6 +1002,114 @@ def compute_parameter_importance(
     return pd.DataFrame.from_records(rows)
 
 
+def _relative_range(values: pd.Series) -> float:
+    vals = pd.to_numeric(values, errors="coerce")
+    finite = vals[np.isfinite(vals)]
+    if finite.empty:
+        return float("nan")
+    denom = max(abs(float(finite.median())), 1.0e-12)
+    return float((float(finite.max()) - float(finite.min())) / denom)
+
+
+def compute_Hw_cancellation_audit(cases_df: pd.DataFrame) -> pd.DataFrame:
+    """Build a case-group audit for H_w sensitivity and algebraic cancellation.
+
+    A case_group is the same grid case with pkn_H_w_m removed. The audit reports
+    each H_w member plus group-level relative ranges. This makes it clear when
+    H_w is wired into C/L/H_p but cancels from stage total storage volume.
+    """
+    required = {
+        "pkn_H_w_m",
+        "fleak",
+        "median_pkn_C_stage",
+        "median_pkn_half_length_mean_m",
+        "median_pkn_fracture_volume_m3",
+        "median_shutin_fluid_efficiency",
+    }
+    missing = sorted(required - set(cases_df.columns))
+    if cases_df.empty or missing:
+        return pd.DataFrame(columns=[
+            "case_group_id",
+            "pkn_H_w_m",
+            "pkn_H_p_m",
+            "pkn_fleak",
+            "pkn_C_stage_median",
+            "pkn_half_length_median",
+            "pkn_fracture_volume_median",
+            "pkn_shutin_fluid_efficiency_median",
+            "volume_rel_range",
+            "C_stage_rel_range",
+            "half_length_rel_range",
+            "fluid_efficiency_rel_range",
+            "pkn_H_w_volume_sensitivity_flag",
+        ])
+
+    group_cols = [
+        c for c in [
+            "closure_min_elapsed_seconds",
+            "pkn_C_coupling",
+            "flow_allocation",
+            "flow_allocation_exponent",
+            "stress_shadow_alpha",
+            "fleak",
+            "C_multiplier",
+            "effective_volume_factor",
+            "wellbore_storage_coeff_m3_per_mpa",
+            "perf_friction_mode",
+            "perf_friction_constant_mpa",
+            "perforation_diameter_mm",
+            "perforations_per_cluster",
+            "perforation_Cd",
+            "fluid_density_kg_m3",
+            "stable_min_r2",
+            "stable_min_points",
+            "stable_window_mode",
+            "tp_multiplier",
+        ]
+        if c in cases_df.columns
+    ]
+    rows: list[dict[str, Any]] = []
+    grouped = cases_df.groupby(group_cols, dropna=False) if group_cols else [((), cases_df)]
+    for group_id, (_, grp) in enumerate(grouped):
+        volume_rr = _relative_range(grp["median_pkn_fracture_volume_m3"])
+        C_rr = _relative_range(grp["median_pkn_C_stage"])
+        L_rr = _relative_range(grp["median_pkn_half_length_mean_m"])
+        eff_rr = _relative_range(grp["median_shutin_fluid_efficiency"])
+
+        changes_intermediates = (
+            (np.isfinite(C_rr) and C_rr > 1.0e-9)
+            or (np.isfinite(L_rr) and L_rr > 1.0e-9)
+            or (np.isfinite(eff_rr) and eff_rr > 1.0e-9)
+        )
+        if np.isfinite(volume_rr) and volume_rr > 1.0e-9:
+            flag = "H_w_changes_stage_total_volume"
+        elif changes_intermediates:
+            flag = "H_w_cancels_in_stage_total_volume_but_changes_intermediates"
+        else:
+            flag = "H_w_no_detectable_effect"
+
+        for _, row in grp.sort_values("pkn_H_w_m").iterrows():
+            pkn_H_w_m = float(row["pkn_H_w_m"])
+            fleak = float(row["fleak"])
+            rows.append({
+                "case_group_id": int(group_id),
+                "pkn_H_w_m": pkn_H_w_m,
+                "pkn_H_p_m": float(pkn_H_w_m * fleak),
+                "pkn_fleak": fleak,
+                "pkn_C_stage_median": row["median_pkn_C_stage"],
+                "pkn_half_length_median": row["median_pkn_half_length_mean_m"],
+                "pkn_fracture_volume_median": row["median_pkn_fracture_volume_m3"],
+                "pkn_shutin_fluid_efficiency_median": row["median_shutin_fluid_efficiency"],
+                "volume_rel_range": volume_rr,
+                "C_stage_rel_range": C_rr,
+                "half_length_rel_range": L_rr,
+                "fluid_efficiency_rel_range": eff_rr,
+                "pkn_H_w_volume_sensitivity_flag": flag,
+            })
+
+    return pd.DataFrame.from_records(rows)
+
+
 def write_outputs(
     output_dir: Path,
     cases_df: pd.DataFrame,
@@ -1016,6 +1145,15 @@ def write_outputs(
     failed_path = output_dir / "grid_failed_cases.csv"
     failed_df.to_csv(failed_path, index=False)
     paths["grid_failed_cases"] = failed_path
+
+    hw_audit = compute_Hw_cancellation_audit(cases_df)
+    hw_path = output_dir / "Hw_cancellation_audit.csv"
+    hw_audit.to_csv(hw_path, index=False)
+    paths["Hw_cancellation_audit"] = hw_path
+
+    figures_dir = output_dir / "figures"
+    figures_dir.mkdir(exist_ok=True)
+    paths["figures"] = figures_dir
     return paths
 
 

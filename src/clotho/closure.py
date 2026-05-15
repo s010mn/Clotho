@@ -497,6 +497,18 @@ PHYSICAL_PKN_IF = 0.722464726919
 PHYSICAL_PKN_HW_M = 50.0
 
 
+def _pkn_height_value_and_source(H_w_m: float | None) -> tuple[float, str]:
+    """返回 PKN 裂缝高度和来源标签。
+
+    H_w_m 为 None 表示使用项目默认值 50 m；CLI 或网格显式传入数值时，
+    即使数值也是 50，也标记为 cli_or_grid，方便审计参数是否真正接入。
+    """
+    if H_w_m is None:
+        return PHYSICAL_PKN_HW_M, "default_50m"
+    H_w_value = float(H_w_m)
+    return H_w_value, "cli_or_grid"
+
+
 def physical_pkn_fracture_volume(
     L_m: float,
     H_w_m: float,
@@ -772,7 +784,7 @@ def physical_pkn_volume_balance(
     *,
     n_clusters: int,
     cluster_spacings_m: list[float] | float,
-    H_w_m: float = PHYSICAL_PKN_HW_M,
+    H_w_m: float | None = None,
     fleak: float | None = None,
     E_prime_mpa: float,
     closure_pressure_mpa: float | None,
@@ -812,12 +824,13 @@ def physical_pkn_volume_balance(
     coupling. The default 1.0 preserves legacy behaviour. The raw value and the
     applied multiplier are recorded in the output for audit.
     """
+    H_w_value, H_w_source = _pkn_height_value_and_source(H_w_m)
 
     base: dict[str, Any] = {
         "pkn_model_name": "physical_pkn_storage",
         "pkn_model_version": "phase5d",
-        "pkn_H_w_m": float(H_w_m),
-        "pkn_H_w_source": "fixed_50m_human_required",
+        "pkn_H_w_m": float(H_w_value),
+        "pkn_H_w_source": H_w_source,
         "pkn_I_F": float(I_F),
         "pkn_I_F_source": "human_required_constant",
         "pkn_E_prime_mpa": float(E_prime_mpa),
@@ -914,6 +927,8 @@ def physical_pkn_volume_balance(
 
     if C_coupling not in ("stage-constant", "shadow-scaled"):
         return _fail(f"unknown_pkn_C_coupling:{C_coupling}")
+    if not np.isfinite(H_w_value) or H_w_value <= 0:
+        return _fail(f"invalid_pkn_H_w_m:{H_w_m}")
     if n_clusters < 1:
         return _fail("n_clusters_invalid")
     if not np.isfinite(E_prime_mpa) or E_prime_mpa <= 0:
@@ -923,7 +938,7 @@ def physical_pkn_volume_balance(
     if not np.isfinite(tp_seconds) or tp_seconds <= 0:
         return _fail("tp_invalid")
 
-    shadow = compute_stress_shadow(n_clusters, cluster_spacings_m, H_w_m, alpha=alpha)
+    shadow = compute_stress_shadow(n_clusters, cluster_spacings_m, H_w_value, alpha=alpha)
     if shadow["stress_shadow_status"] != "ok":
         out = _fail("stress_shadow_linear_system_failed")
         out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
@@ -947,13 +962,13 @@ def physical_pkn_volume_balance(
 
     fleak_val = fleak if fleak is not None and np.isfinite(fleak) and fleak > 0 else 0.5
     fleak_warning = "" if (fleak is not None and np.isfinite(fleak) and fleak > 0) else "fleak_default_0p5"
-    H_p_m = fleak_val * H_w_m
+    H_p_m = fleak_val * H_w_value
 
     slope = seg["stable_dP_dG_slope_mpa"]
     # C_stage: stage-level leakoff coefficient computed from stable dP/dG with xi=1.
     # Phase 5D.5 lets C_L_i either equal C_stage (stage-constant) or scale by xi (shadow-scaled).
     # Phase 5F adds a multiplier knob for grid-search sensitivity; the raw value is preserved.
-    C_stage_raw = compute_physical_leakoff_C(slope, H_w_m, E_prime_mpa, H_p_m, tp_seconds, 1.0, I_F=I_F)
+    C_stage_raw = compute_physical_leakoff_C(slope, H_w_value, E_prime_mpa, H_p_m, tp_seconds, 1.0, I_F=I_F)
     if not np.isfinite(C_multiplier) or C_multiplier <= 0:
         out = _fail(f"invalid_C_multiplier:{C_multiplier}")
         out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
@@ -1006,7 +1021,7 @@ def physical_pkn_volume_balance(
     cluster_audit_rows: list[dict[str, Any]] = []
 
     sqrt_tp = math.sqrt(tp_seconds)
-    storage_unit_factor = math.pi * I_F / E_prime_mpa * H_w_m ** 2  # multiplies P_net_i
+    storage_unit_factor = math.pi * I_F / E_prime_mpa * H_w_value ** 2  # multiplies P_net_i
     leakoff_unit_factor = H_p_m * sqrt_tp  # multiplies C_L_i (then K_lp or 4*g)
 
     for idx in stable_indices:
@@ -1038,7 +1053,7 @@ def physical_pkn_volume_balance(
                 0.0,
             )
         V_f_arr = np.array([
-            physical_pkn_fracture_volume(float(L_arr[i]), H_w_m, float(P_net_arr[i]), E_prime_mpa, I_F=I_F)
+            physical_pkn_fracture_volume(float(L_arr[i]), H_w_value, float(P_net_arr[i]), E_prime_mpa, I_F=I_F)
             for i in range(n_clusters)
         ])
 
@@ -1466,6 +1481,7 @@ def _process_stage(
     tp_multiplier: float = 1.0,
     effective_volume_factor: float = 1.0,
     fleak_override: float | None = None,
+    pkn_H_w_m: float | None = None,
     C_multiplier: float = 1.0,
     stable_min_elapsed_seconds: float = 15.0,
     stable_min_points: int = 8,
@@ -1479,6 +1495,9 @@ def _process_stage(
     row["effective_volume_factor_applied"] = float(effective_volume_factor)
     row["pkn_fleak_override_applied"] = (
         float(fleak_override) if fleak_override is not None else np.nan
+    )
+    row["pkn_H_w_override_applied"] = (
+        float(pkn_H_w_m) if pkn_H_w_m is not None else np.nan
     )
     row["pkn_effective_injected_volume_m3"] = np.nan
     row["tp_for_g_seconds"] = np.nan
@@ -1653,7 +1672,7 @@ def _process_stage(
     physical_pkn = physical_pkn_volume_balance(
         n_clusters=n_cl,
         cluster_spacings_m=spacings,
-        H_w_m=PHYSICAL_PKN_HW_M,
+        H_w_m=pkn_H_w_m,
         fleak=fleak_for_pkn,
         E_prime_mpa=E_prime,
         closure_pressure_mpa=closure_p_val,
@@ -1831,6 +1850,7 @@ def run_closure_batch(
     tp_multiplier: float = 1.0,
     effective_volume_factor: float = 1.0,
     fleak_override: float | None = None,
+    pkn_H_w_m: float | None = None,
     C_multiplier: float = 1.0,
     stable_min_elapsed_seconds: float = 15.0,
     stable_min_points: int = 8,
@@ -1888,6 +1908,7 @@ def run_closure_batch(
             tp_multiplier=tp_multiplier,
             effective_volume_factor=effective_volume_factor,
             fleak_override=fleak_override,
+            pkn_H_w_m=pkn_H_w_m,
             C_multiplier=C_multiplier,
             stable_min_elapsed_seconds=stable_min_elapsed_seconds,
             stable_min_points=stable_min_points,
@@ -1931,6 +1952,7 @@ def run_closure_batch(
                 "tp_for_g_seconds": np.nan,
                 "effective_volume_factor_applied": float(effective_volume_factor),
                 "pkn_fleak_override_applied": float(fleak_override) if fleak_override is not None else np.nan,
+                "pkn_H_w_override_applied": float(pkn_H_w_m) if pkn_H_w_m is not None else np.nan,
                 "pkn_effective_injected_volume_m3": np.nan,
                 "closure_was_computed": False,
                 "early_transient_risk": False,

@@ -208,7 +208,7 @@ pkn_C_multiplier_to_20pct median ~0.28，提示当前 C_stage 大致需要缩小
 ## 27. Phase 5F 网格搜索后续
 
 Phase 5F 引入 `clotho pkn-grid-search`，把 closure_min_elapsed / pkn_C_coupling /
-flow_allocation_exponent / stress_shadow_alpha / fleak / C_multiplier /
+flow_allocation_exponent / stress_shadow_alpha / H_w / fleak / C_multiplier /
 effective_volume_factor / wellbore_storage / 射孔摩阻 (4 modes) / 稳定段 R²·点数·选段
 模式 / tp_multiplier 一起作为搜索空间，并在 `physical_plausibility_pass` 子集中
 寻找 `Pearson > 0.3`（robust 再叠加 `Spearman > 0.2`）的 metric × target candidate。
@@ -225,6 +225,12 @@ effective_volume_factor / wellbore_storage / 射孔摩阻 (4 modes) / 稳定段 
   以及 fleak / wellbore_storage 是否能在不动 C 的前提下把 efficiency 推回
   合理区间；
 - 在确认 robust candidate 之前，**不**修改 C_stage 或 H_p 等公式默认；
-- 网格搜索 CSV 都放在 `/tmp/gfunction-ref-audit-phase5f/`，不提交；
+- H_w effect may cancel under the current C-from-slope formulation；Phase 5F.1 的
+  `Hw_cancellation_audit.csv` 已证明部分 case 中 H_w 改变 C_stage / L_i，但不改变
+  stage total storage volume；
+- 后续需要 independent height/leakoff calibration，不能只靠 H_w 或 fleak 网格解释
+  fluid efficiency；
+- 如果 manifest 或 observation 定义改变，real well4 grid result 必须重跑；
+- 网格搜索 CSV 都放在 `/tmp/gfunction-ref-audit-phase5f*/`，不提交；
 - 真正下结论之前，再对 robust candidate 做手工 plot review（G·dP/dG vs G，
   observation vs metric 散点）以排除单 stage outlier 主导。

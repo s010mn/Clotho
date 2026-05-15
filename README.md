@@ -46,13 +46,14 @@ stage 参数表
   - fluid partition metrics（Phase 5D.5）：storage / leakoff / nonstorage volumes 和 fractions；
   - stress shadow linear system（(I+αF)ξ=1）+ stress-shadow-weighted flow allocation（η_i = ξ_i/Σξ_i）；
   - stable P-vs-G segment detection + leakoff coefficient C；
+  - PKN 高度默认 H_w=50 m，可用 `--pkn-Hw-m` 显式传入单值做 sensitivity；
   - cluster-level audit（`--cluster-output`：stage, stable_row_index, cluster_index, eta_i, xi_i, C_L_i, C_stage, denominator_i, L_i, V_f_i, injected_i, leakoff_*, balance_residual_i）；
   - legacy MVP PKN 结果保留为 `legacy_mvp_pkn_*` 字段；
   - 观测相关性对照（微地震/电磁，含 storage/leakoff/nonstorage proxies）；
   - 所有结果标记 `closure_is_candidate=True, closure_is_final_interpretation=False`。
 - 物理约束 PKN 参数网格搜索（Phase 5F, `pkn-grid-search`）：
   - 网格轴覆盖 closure_min_elapsed / pkn_C_coupling / flow_allocation /
-    flow_allocation_exponent / stress_shadow_alpha / fleak / C_multiplier /
+    flow_allocation_exponent / stress_shadow_alpha / `pkn_Hw` / fleak / C_multiplier /
     effective_volume_factor / wellbore_storage_coeff / 射孔摩阻模式（none /
     constant / orifice / zero-after-shutin）/ 射孔几何 / 稳定段 R²·点数·选段模式 /
     tp_multiplier；
@@ -64,7 +65,8 @@ stage 参数表
     `grid_robust_positive_candidates.csv` / `grid_best_by_target.csv` /
     `grid_parameter_importance.csv` / `grid_failed_cases.csv`；
   - `--max-cases` 硬上限：超过则报错（不做 silent random sampling）；
-  - I_F = 0.722464726919、H_w = 50 m 不进入搜索空间；
+  - I_F = 0.722464726919 不进入搜索空间；H_w 默认 50 m，可用
+    `--pkn-Hw-grid` 做 30-60 m sensitivity；
   - 结果是 sensitivity audit，不是最终物理解释。
 
 ## 当前不做
@@ -286,6 +288,7 @@ uv run python -m clotho closure-batch \
   --rate-time-unit minute \
   --min-rate 10 \
   --g-time-m 0.8 \
+  --pkn-Hw-m 50 \
   --wellbore-storage-coeff-m3-per-mpa 0.01
 ```
 
@@ -309,6 +312,8 @@ uv run python -m clotho closure-batch \
 - Excel/PNG 输出
 
 参考库 `Gfunction-wells-current.zip` 只能用于审计、迁移参考和仓库外 smoke，不应复制进 Clotho。
+真实 well smoke 的 manifest、observation CSV、grid CSV 和 figures 都应写到 `/tmp/...`，
+不能把 synthetic grid smoke 写成真实物理结果。
 
 ## 命名说明
 

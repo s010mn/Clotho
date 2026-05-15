@@ -37,6 +37,7 @@ CLI：`clotho pkn-grid-search`。每个 grid 都是逗号分隔字符串。
 | `--flow-allocation-grid` | stress-shadow, uniform | η 分配方式 |
 | `--flow-allocation-exponent-grid` | 0,1,2 | η_i = xi_i^γ |
 | `--stress-shadow-alpha-grid` | 0,0.5,1,2 | 应力阴影耦合强度 |
+| `--pkn-Hw-grid` | 50 | PKN 高度 H_w；Phase 5F.1 real smoke 使用 30,40,50,60 m |
 | `--fleak-grid` | 0.25,0.5,0.75,1.0 | H_p = fleak · H_w |
 | `--C-multiplier-grid` | 0.1,0.2,0.282,0.5,0.75,1.0,1.5,2.0 | 把 C_stage 直接乘的纯敏感性轴 |
 | `--effective-volume-factor-grid` | 0.25,0.5,0.75,1.0 | 把 effective_injected_volume 直接乘的敏感性轴 |
@@ -53,7 +54,8 @@ CLI：`clotho pkn-grid-search`。每个 grid 都是逗号分隔字符串。
 | `--tp-multiplier-grid` | 0.7,0.85,1.0,1.15,1.3 | 给 tp_corrected 一个乘性扰动看敏感性 |
 | `--max-cases` | 200000 | 笛卡尔积上限，超出报错（不做 silent sampling） |
 
-I_F = 0.722464726919 和 H_w = 50 m **不进入搜索空间**。
+I_F = 0.722464726919 **不进入搜索空间**。H_w 默认仍为 50 m；
+Phase 5F.1 只把 H_w 作为敏感性轴加入 grid，不改变默认值。
 
 ## 3. 射孔摩阻公式
 
@@ -120,7 +122,9 @@ efficiency 和数据质量没崩到不可解释的地步。
   physical_pass_rate；
 - `grid_failed_cases.csv`：捕获 case 内异常，保留参数以便复现。
 
-## 7. 搜索结果（参考 smoke）
+## 7. 搜索结果
+
+### 7.1 Phase 5F synthetic smoke（只验证 CLI 机械行为）
 
 由于 `/tmp/gfunction-ref-audit-phase3c/` 的 well4 staging 在 session 间被清理，本阶段
 reference smoke 使用 `/tmp/gfunction-ref-audit-phase5f-synthetic/`（28 段 synthetic
@@ -173,14 +177,100 @@ Smoke 参数（1280 cases, ~16 min wall time，0.75 s/case）：
 - `grid_robust_positive_candidates.csv` 为空；
 - best_by_target 物理可信子集的 storage_vs_microseismic 仍 −0.36，storage_vs_EM 仍 −0.37。
 
-**这个 synthetic 结论本身没有物理意义**。它的作用是证明：
+**这个 synthetic 结论本身没有物理意义**。Synthetic smoke only validates CLI
+mechanics, not physics. 它的作用是证明：
 
 1. 1280-case 网格 enumerator + output writers + candidate flags 在真实管线上能跑通；
 2. 当观测和指标本身不存在内蕴正相关时，工具不会硬挑出一个正相关；
 3. C_multiplier 是当前最敏感的 efficiency 轴（这与 Phase 5D.6 的判断一致）；
 4. 用户可以在自己的真实 staging 上重跑 `clotho pkn-grid-search` 得到更有物理含义的结果。
 
-完整 grid 在用户提供的 staging 上跑出后，应该回答以下问题（都不许跳过）：
+### 7.2 Phase 5F.1 real well4 grid smoke（真实 well4）
+
+Phase 5F.1 由 Codex 接手 sprint execution 后重建真实 well4 smoke：
+
+- data source：`/home/ming/Gfunction-wells-current.zip` 解压到
+  `/tmp/gfunction-ref-audit-phase5f1/Gfunction-wells-current/wells/well4`；
+- observation CSV：`/tmp/gfunction-ref-audit-phase5f1/observations_microseismic_em_area.csv`；
+- manifest：`/tmp/gfunction-ref-audit-phase5f1/manifest_keep_last_regenerated.csv`；
+- manifest 生成方法：复现 Phase 3H/4K 的 tail step-drop 候选口径，使用
+  `threshold=1 MPa`、停泵后尾部正压力段、`valid_end = candidate_start - 1 s`、
+  P95 正排量作为 `max_sustained_rate`，并按已记录的 Phase 3H 28-stage candidate set
+  保留 stage 1,2,3,5-24,26-30；stage 4/25 保留为 observation placeholder；
+- duplicate policy：`keep-last`，28/28 manifest stages readiness 通过；
+- output dir：`/tmp/gfunction-ref-audit-phase5f1/`。
+
+建议 full coarse grid 组合数为 43,794,432，超过 `--max-cases=200000`。
+本次 real smoke 为 288 cases：保留
+`closure_min_elapsed=15,30,60`、`pkn_C_coupling=stage-constant,shadow-scaled`、
+`fleak=0.25,0.5,0.75,1.0`、`H_w=30,40,50,60`、
+`C_multiplier=0.1,0.282,1.0`；先减少 flow exponent / stress-shadow alpha /
+effective-volume / wellbore-storage / perforation geometry / stable-window / tp
+side axes。这个 288-case smoke 是真实 well4 sensitivity smoke，不是全网格结论。
+
+输出：
+
+- `grid_cases.csv`：288 rows；
+- `grid_positive_candidates.csv`：1408 metric×target rows；
+- `grid_robust_positive_candidates.csv`：332 metric×target rows；
+- `grid_failed_cases.csv`：0 rows；
+- `physical_plausibility_pass=True`：100/288 cases；
+- 每个 case 都有 28 个 PKN ok stage，placeholder_count=2（stage 4/25）。
+
+真实 well4 关键结果：
+
+| 问题 | Phase 5F.1 real well4 smoke 答案 |
+|---|---|
+| physical PKN storage 是否有 Pearson > 0.3 candidate？ | 没有。storage_vs_microseismic 最好仍为 -0.204（物理可信子集），storage_vs_EM 最好 +0.095。 |
+| leakoff/nonstorage proxy 是否有 Pearson > 0.3 candidate？ | 有。best robust leakoff/nonstorage vs microseismic Pearson +0.310, Spearman +0.346, n=28, physical pass。vs EM 的 Pearson 可到 +0.556，但 Spearman +0.107，不是 robust。 |
+| raw/effective injected volume 是否主导正相关？ | 是。raw/effective vs EM Pearson +0.807, Spearman +0.250, n=28，且在所有 cases 中相同。它是施工规模控制量，不是 G函数反演体积。 |
+| legacy MVP 是否有 robust positive？ | 有。legacy MVP vs microseismic Pearson +0.370, Spearman +0.372, n=28, physical pass；legacy MVP 不是 canonical physical PKN storage。 |
+| 是否通过物理可信过滤？ | 100/288 cases 通过；通过只表示 efficiency / stage count / R² 等门槛没崩，不表示模型正确。 |
+| 是否 low-n？ | 否。所有相关性 n=28；但 stage 4/25 仍是 placeholder，未形成 n=30。 |
+| 是否有 robust positive candidate？ | 有，但主要是 raw/effective injected volume、legacy MVP、leakoff/nonstorage proxy；没有 storage robust positive。 |
+| H_w 是否改变 final volume？ | 取决于 coupling。`shadow-scaled` 下 stage total volume 代数抵消（volume_rel_range ~0）但 C_stage/L 改变；`stage-constant` 下 H_w 会改变 stage total volume（volume_rel_range 0.13-0.165）。 |
+| C_multiplier 是否主导 efficiency？ | 是。mean median shut-in efficiency: C=0.1 → 0.578；C=0.282 → 0.343；C=1.0 → 0.135。 |
+
+代表性 best candidates（真实 well4）：
+
+| class | target | Pearson | Spearman | n | physical pass | case 说明 |
+|---|---|---:|---:|---:|---|---|
+| storage | microseismic | -0.204 | -0.238 | 28 | yes | best storage 仍为负相关，不是 positive candidate |
+| storage | EM | +0.095 | +0.187 | 28 | yes | 未到 Pearson > 0.3 |
+| leakoff_proxy | microseismic | +0.310 | +0.346 | 28 | yes | robust；case 152, C=1.0, H_w=30, fleak=0.75, shadow-scaled, closure_min=30 |
+| nonstorage | microseismic | +0.310 | +0.346 | 28 | yes | robust；case 158, C=1.0, H_w=40, fleak=0.25, shadow-scaled, closure_min=30 |
+| leakoff_proxy/nonstorage | EM | +0.556 | +0.107 | 28 | yes | Pearson positive，但 Spearman 不 robust |
+| raw/effective volume | EM | +0.807 | +0.250 | 28 | yes | robust 但不是 G-function inversion |
+| legacy MVP | microseismic | +0.370 | +0.372 | 28 | yes | robust 但 legacy MVP 非 canonical physical PKN |
+
+Efficiency sanity：
+
+- median shut-in efficiency across real grid: 0.078-0.704，grid median 0.355；
+- C_multiplier 分组平均 median efficiency：0.1 → 0.578，0.282 → 0.343，1.0 → 0.135；
+- H_w 分组平均 median efficiency：30 m → 0.363，40 m → 0.353，50 m → 0.348，60 m → 0.345；
+- fleak 分组平均完全相同（0.352），说明当前 C-from-slope 公式中 fleak 与 H_p
+  进入 C_stage 后出现代数抵消，fleak 不是本 smoke 的 efficiency 主导轴。
+
+H_w cancellation audit：
+
+`/tmp/gfunction-ref-audit-phase5f1/Hw_cancellation_audit.csv`
+
+- `H_w_cancels_in_stage_total_volume_but_changes_intermediates`：144 rows；
+- `H_w_changes_stage_total_volume`：144 rows；
+- cancellation cases 的 `volume_rel_range` 约 0，但 `C_stage_rel_range=0.667`，
+  `half_length_rel_range≈1.10`；
+- changing-volume cases 的 `volume_rel_range=0.13-0.165`，`C_stage_rel_range=0.667`，
+  `half_length_rel_range=1.50-1.61`。
+
+Outlier caution：
+
+- baseline one-case leave-one-out 显示 stage 24 对 EM 相关性影响很大；
+  例如 raw/effective volume vs EM 从 +0.807 降到 +0.341，leakoff/nonstorage vs EM
+  从 +0.594 降到 +0.022。后续组会不能把 EM 正相关直接写成物理验证。
+
+### 7.3 后续完整 grid 应继续回答的问题
+
+如果未来跑完整 grid 或更大 coarse grid，仍需回答以下问题（都不许跳过）：
 
 - 是否存在 physical PKN storage 正相关 candidate？
 - 是否存在 leakoff/nonstorage proxy 正相关 candidate？
@@ -191,7 +281,7 @@ Smoke 参数（1280 cases, ~16 min wall time，0.75 s/case）：
 ## 8. 不能写成什么
 
 - ❌ “网格搜索证明 PKN 模型正确”——网格搜索只列灵敏度，不做 hypothesis test；
-- ❌ “只要挑一个参数就能得到 Pearson > 0.3”——任何单点结果都要先看 robust 候选
+- ❌ “随便换一组参数就能得到 Pearson > 0.3”——任何单点结果都要先看 robust 候选
   和 parameter_importance；
 - ❌ “raw / effective injected volume 与微地震正相关就是 G 函数反演体积成立”
   ——raw_volume 与 PKN 物理 *无关*，它只反映总注入规模；
@@ -216,8 +306,8 @@ Smoke 参数（1280 cases, ~16 min wall time，0.75 s/case）：
 ## 10. 边界
 
 - I_F = 0.722464726919 不变；
-- H_w = 50 m 不变；
-- 不修改 closure-batch 已有默认；
+- H_w 默认值 = 50 m 不变；Phase 5F.1 允许 `--pkn-Hw-grid` 做 30-60 m 敏感性；
+- closure-batch 默认 H_w = 50 m 不变；可用 `--pkn-Hw-m` 显式传单值；
 - 不提交 PNG / CSV / 真实数据 / 网格输出；
 - 不 push master；
 - 不写成最终结论；

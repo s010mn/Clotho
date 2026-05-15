@@ -268,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     closure_batch.add_argument("--flow-allocation", choices=["stress-shadow", "uniform"], default="stress-shadow", help="Flow allocation method.")
     closure_batch.add_argument("--flow-allocation-exponent", default=1.0, type=float, help="Flow allocation exponent gamma (eta_i = xi_i^gamma / sum).")
     closure_batch.add_argument("--pkn-C-coupling", choices=["stage-constant", "shadow-scaled"], default="stage-constant", help="Per-cluster leakoff coupling. stage-constant: C_L_i = C_stage; shadow-scaled: C_L_i = xi_i * C_stage (legacy Phase 5D.4 coupling).")
+    closure_batch.add_argument("--pkn-Hw-m", default=None, type=float, help="Explicit PKN fracture height H_w in meters. Omit to use the default 50 m.")
 
     grid = subparsers.add_parser(
         "pkn-grid-search",
@@ -292,6 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     grid.add_argument("--flow-allocation-grid", default="stress-shadow,uniform")
     grid.add_argument("--flow-allocation-exponent-grid", default="0,1,2")
     grid.add_argument("--stress-shadow-alpha-grid", default="0,0.5,1,2")
+    grid.add_argument("--pkn-Hw-grid", dest="pkn_H_w_grid", default="50")
     grid.add_argument("--fleak-grid", default="0.25,0.5,0.75,1.0")
     grid.add_argument("--C-multiplier-grid", default="0.1,0.2,0.282,0.5,0.75,1.0,1.5,2.0")
     grid.add_argument("--effective-volume-factor-grid", default="0.25,0.5,0.75,1.0")
@@ -924,6 +926,7 @@ def _run_closure_batch(args: argparse.Namespace) -> int:
         flow_allocation=args.flow_allocation,
         flow_allocation_exponent=args.flow_allocation_exponent,
         pkn_C_coupling=args.pkn_C_coupling,
+        pkn_H_w_m=args.pkn_Hw_m,
         well=args.well,
     )
     paths = write_closure_batch_outputs(
@@ -967,6 +970,7 @@ def _run_pkn_grid_search(args: argparse.Namespace) -> int:
         "flow_allocation": parse_choice_grid(args.flow_allocation_grid, ALLOWED_FLOW_ALLOCATION),
         "flow_allocation_exponent": parse_float_grid(args.flow_allocation_exponent_grid),
         "stress_shadow_alpha": parse_float_grid(args.stress_shadow_alpha_grid),
+        "pkn_H_w_m": parse_float_grid(args.pkn_H_w_grid),
         "fleak": parse_float_grid(args.fleak_grid),
         "C_multiplier": parse_float_grid(args.C_multiplier_grid),
         "effective_volume_factor": parse_float_grid(args.effective_volume_factor_grid),
@@ -1030,7 +1034,7 @@ def _run_pkn_grid_search(args: argparse.Namespace) -> int:
     print("pkn_grid_search_is_candidate=True")
     print("pkn_grid_search_is_final_interpretation=False")
     print("pkn_grid_search_I_F_changed=False")
-    print("pkn_grid_search_H_w_changed=False")
+    print("pkn_grid_search_H_w_default_m=50")
     return 0
 
 

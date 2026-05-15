@@ -2869,7 +2869,7 @@ GROUP_MEETING_GFUNCTION_VOLUME.md 更新：
 - 替换为 Phase 5D/5D.1 physical PKN 结果；
 - n=3 不足以评估，明确写入；
 - negative correlation 历史仍保留；
-- 不声称验证成功或失败。
+- 不声称模型已经被确认或否定。
 
 边界（5D.1）：
 
@@ -3297,3 +3297,173 @@ reference smoke：
 - 不删除负相关结果；
 - 不只报告最好看的正相关；
 - 不做 silent random sampling，超 `--max-cases` 直接报错。
+
+## Phase 5F.1：real well4 grid smoke and H_w sensitivity
+
+执行方：
+
+- Codex 接手 sprint execution；
+- Claude Code frozen；
+- Feynman frozen；
+- GPT-5.5 Pro 继续负责架构判断、物理口径把关和验收。
+
+目的：
+
+- Phase 5F 的 synthetic smoke 只验证 CLI / output mechanics，不作为 well4 物理结果；
+- 人类明确认为 H_w=30-60 m 合理，因此把 H_w 加入 PKN grid sensitivity；
+- 使用真实 well4 staging 重跑 real well4 coarse grid smoke；
+- 不改 I_F，不改 closure 默认 H_w，不提交真实数据 / CSV / PNG，不 push master。
+
+代码变更：
+
+- `closure-batch` 新增 `--pkn-Hw-m FLOAT`；
+  默认仍为 50.0 m；
+- `pkn-grid-search` 新增 `--pkn-Hw-grid`；
+  default grid 为 50，real smoke 使用 30,40,50,60；
+- `GridCase` / `count_grid_cases` / `enumerate_grid_cases` 新增轴 `pkn_H_w_m`；
+- `run_closure_batch` / `_process_stage` / `physical_pkn_volume_balance` 串联
+  `pkn_H_w_m`；
+- summary 输出 `pkn_H_w_m` 和 `pkn_H_w_source`：
+  - CLI/grid 显式传入：`cli_or_grid`；
+  - 使用默认值：`default_50m`；
+- H_p 继续按 `H_p = pkn_fleak * pkn_H_w_m` 计算；
+- grid output 新增 `Hw_cancellation_audit.csv` 和空 `figures/` 目录；
+- I_F 保持 `0.722464726919`。
+
+测试：
+
+- `tests/test_grid_search.py` 覆盖：
+  - `--pkn-Hw-grid` parser；
+  - H_w axis case count / enumeration；
+  - `Hw_cancellation_audit.csv` output；
+- `tests/test_closure.py` 覆盖：
+  - `closure-batch --pkn-Hw-m`；
+  - H_p = fleak * H_w；
+  - H_w 改变 C_stage 和 half length；
+  - 当前模型下部分 case stage total volume 代数抵消，不是参数没接上。
+
+真实数据恢复：
+
+- data source：`/home/ming/Gfunction-wells-current.zip`；
+- 解压到：`/tmp/gfunction-ref-audit-phase5f1/Gfunction-wells-current/wells/well4`；
+- stage_params：`/tmp/gfunction-ref-audit-phase5f1/Gfunction-wells-current/wells/well4/stage_params.csv`；
+- observation CSV：`/tmp/gfunction-ref-audit-phase5f1/observations_microseismic_em_area.csv`；
+- Phase 4K manifest 原路径不存在，故在 `/tmp` 重建：
+  `/tmp/gfunction-ref-audit-phase5f1/manifest_keep_last_regenerated.csv`；
+- manifest 重建方法：
+  - 复现 Phase 3H/4K 记录的 tail step-drop 候选口径；
+  - post-shut-in tail positive segment 中找 step drop >= 1 MPa；
+  - `valid_falloff_end_elapsed = candidate_start_elapsed - 1 s`；
+  - `max_sustained_rate` 使用停泵前正排量 P95；
+  - 按 Phase 3H 已记录的 28-stage candidate set 保留
+    `1,2,3,5-24,26-30`；
+  - stage 4 / 25 保留为 observation placeholder；
+  - `elapsed_duplicate_policy=keep-last`。
+
+Manifest smoke：
+
+```text
+batch_stage_count=28
+batch_ready_stage_count=28
+batch_not_ready_stage_count=0
+batch_derivative_csv_written_count=28
+```
+
+Real well4 grid smoke：
+
+- output dir：`/tmp/gfunction-ref-audit-phase5f1/`；
+- suggested full coarse grid with H_w would be 43,794,432 cases, exceeding
+  `--max-cases=200000`；
+- actually run: 288 cases；
+- reduction reason：先减少 flow exponent / stress-shadow alpha / effective-volume /
+  wellbore-storage / perforation geometry / stable-window / tp side axes；保留
+  `closure_min_elapsed`, `pkn_C_coupling`, `H_w`, `fleak`, `C_multiplier`；
+- grid axes actually run:
+  - `closure_min_elapsed=15,30,60`
+  - `pkn_C_coupling=stage-constant,shadow-scaled`
+  - `flow_allocation=stress-shadow`
+  - `flow_allocation_exponent=1`
+  - `stress_shadow_alpha=1`
+  - `pkn_H_w_m=30,40,50,60`
+  - `fleak=0.25,0.5,0.75,1.0`
+  - `C_multiplier=0.1,0.282,1.0`
+  - `effective_volume_factor=1.0`
+  - `wellbore_storage_coeff=0`
+  - `perforation_friction_mode=none`
+  - `stable_min_r2=0.5`, `stable_min_points=8`, `stable_window_mode=longest`
+  - `tp_multiplier=1.0`
+
+Grid outputs:
+
+```text
+grid_cases rows: 288
+grid_positive_candidates rows: 1408
+grid_robust_positive_candidates rows: 332
+grid_failed_cases rows: 0
+physical_plausibility_pass cases: 100/288
+pkn_volume_ok_count: 28/28 for every case
+placeholder_count: 2 for every case (stage 4/25)
+```
+
+Real well4 key findings:
+
+- physical PKN storage has no Pearson > 0.3 candidate:
+  - best physical-pass storage vs microseismic: Pearson -0.204, Spearman -0.238, n=28；
+  - best physical-pass storage vs EM: Pearson +0.095, Spearman +0.187, n=28；
+- leakoff/nonstorage proxy has positive candidates:
+  - best robust leakoff vs microseismic: Pearson +0.310, Spearman +0.346, n=28,
+    physical pass；
+  - best leakoff/nonstorage vs EM: Pearson +0.556, Spearman +0.107, n=28,
+    physical pass but not robust by Spearman；
+- raw/effective injected volume dominates EM positive correlation:
+  - Pearson +0.807, Spearman +0.250, n=28, physical pass；
+  - this is raw/effective injected volume control, not G-function inversion volume；
+- legacy MVP has robust positive candidates:
+  - legacy MVP vs microseismic: Pearson +0.370, Spearman +0.372, n=28, physical pass；
+  - legacy MVP is not canonical physical PKN storage；
+- robust positive candidates exist, but not for canonical storage.
+
+Efficiency sanity:
+
+```text
+median shut-in efficiency across grid: 0.078-0.704
+grid median: 0.355
+C_multiplier=0.1 mean median_efficiency: 0.578
+C_multiplier=0.282 mean median_efficiency: 0.343
+C_multiplier=1.0 mean median_efficiency: 0.135
+H_w mean median_efficiency: 30m=0.363, 40m=0.353, 50m=0.348, 60m=0.345
+fleak mean median_efficiency: identical at 0.352 for all fleak values
+```
+
+H_w cancellation audit:
+
+```text
+/tmp/gfunction-ref-audit-phase5f1/Hw_cancellation_audit.csv
+H_w_cancels_in_stage_total_volume_but_changes_intermediates: 144 rows
+H_w_changes_stage_total_volume: 144 rows
+```
+
+Interpretation:
+
+- `shadow-scaled` coupling can make H_w cancel in stage total storage volume while
+  still changing C_stage and half length;
+- `stage-constant` coupling makes H_w change stage total storage volume;
+- fleak is not an efficiency-driving axis in this C-from-slope formulation, because
+  H_p enters both the C back-calculation and leakoff terms.
+
+Outlier caution:
+
+- baseline leave-one-stage-out screen shows stage 24 strongly affects EM correlations:
+  raw/effective volume vs EM drops from +0.807 to +0.341 without stage 24;
+  leakoff/nonstorage vs EM drops from +0.594 to +0.022 without stage 24.
+  Therefore EM positive correlation cannot be written as model validation.
+
+Scope confirmation:
+
+- no I_F change；
+- no real data added to repo；
+- no `/tmp` CSV/PNG committed；
+- no `gfunc/`, `wells/`, `well4/`, `data/raw/` committed；
+- no push master；
+- closure remains candidate；
+- no validation claim.
