@@ -1546,3 +1546,323 @@ readiness 不通过的 stage 不写 derivative CSV，只在 summary 中记录 bl
 - 当前仍不做 closure、smoothing、automatic bleedoff detection、resampling、Carter、PKN、volume balance、fracture inversion 或 Excel/PNG reporting。
 
 本阶段只更新文档，不修改源码或测试。
+
+## Phase 4F：well4 候选有效窗口 batch derivative 复现实验
+
+本阶段不修改源码、测试或 CLI，不提交真实井数据。
+
+目标：
+
+```text
+使用当前已经实现的 `clotho derivative-batch`，
+对 well4 的 Phase 3H-revised 主动放压候选有效窗口做批量导数复现实验。
+```
+
+参考数据只从仓库外读取：
+
+```text
+/tmp/gfunction-ref-audit-phase3c/Gfunction-wells-current/wells/well4
+```
+
+Phase 3H-revised candidate CSV：
+
+```text
+/tmp/gfunction-ref-audit-phase3h_bleedoff/well4_phase3h_bleedoff_candidates.csv
+```
+
+Phase 4F 输出只写入：
+
+```text
+/tmp/gfunction-ref-audit-phase4f/
+```
+
+没有复制以下目录或数据到 Clotho：
+
+```text
+gfunc/
+wells/
+well4/
+data/raw/
+真实井数据
+```
+
+### 实验设置
+
+使用 `threshold_mpa=1.0` 的主动放压候选结果。
+
+只纳入：
+
+```text
+candidate_found=True
+```
+
+的 stage。
+
+候选 stage 数：
+
+```text
+28
+```
+
+候选 stage：
+
+```text
+1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30
+```
+
+未纳入 stage：
+
+```text
+4, 25
+```
+
+原因：
+
+Phase 3H-revised 的当前主动放压候选规则未在 stage 4 和 stage 25 识别出 candidate。
+
+每个 stage 的：
+
+```text
+valid_falloff_end_elapsed
+```
+
+来自 Phase 3H-revised candidate CSV 的：
+
+```text
+valid_end_elapsed
+```
+
+每个 stage 的：
+
+```text
+max_sustained_rate
+```
+
+来自停泵前正排量的 P95。
+
+比较两个显式重复 elapsed 策略：
+
+```text
+elapsed_duplicate_policy=none
+elapsed_duplicate_policy=keep-last
+```
+
+注意：
+
+- keep-last 是显式实验策略，不是默认策略；
+- 不是静默去重；
+- 不是最终推荐。
+
+### policy = none
+
+batch stdout 摘要：
+
+```text
+batch_stage_count=28
+batch_ready_stage_count=13
+batch_not_ready_stage_count=15
+batch_derivative_csv_written_count=13
+batch_summary_output_path=/tmp/gfunction-ref-audit-phase4f/none/derivative_batch_summary_none.csv
+closure_was_computed=False
+```
+
+ready stages：
+
+```text
+3, 6, 7, 8, 10, 12, 15, 20, 22, 23, 26, 28, 30
+```
+
+blocked stages：
+
+```text
+1, 2, 5, 9, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+```
+
+blocker counts：
+
+```text
+G-time is not strictly increasing    15
+none                                 13
+```
+
+解释：
+
+主动放压候选段裁剪后，如果不显式处理重复 elapsed，28 个候选 stage 中仍有 15 个被重复 G-time 阻断。
+
+### policy = keep-last
+
+batch stdout 摘要：
+
+```text
+batch_stage_count=28
+batch_ready_stage_count=28
+batch_not_ready_stage_count=0
+batch_derivative_csv_written_count=28
+batch_summary_output_path=/tmp/gfunction-ref-audit-phase4f/keep_last/derivative_batch_summary_keep_last.csv
+closure_was_computed=False
+```
+
+ready stages：
+
+```text
+1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30
+```
+
+blocked stages：
+
+```text
+none
+```
+
+blocker counts：
+
+```text
+none    28
+```
+
+解释：
+
+在同一批人工有效窗口上，显式使用 keep-last 处理重复 elapsed 后，28 个候选 stage 全部通过 readiness，并全部写出 derivative CSV。
+
+### keep-last 改变 readiness 的 stage
+
+从 blocked 变为 ready 的 stage：
+
+```text
+1, 2, 5, 9, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+```
+
+keep-last 移除重复 elapsed 行数：
+
+```text
+stage 1: 3
+stage 2: 8
+stage 5: 53
+stage 9: 1
+stage 11: 1
+stage 13: 2
+stage 14: 1
+stage 16: 2
+stage 17: 1
+stage 18: 1
+stage 19: 1
+stage 21: 68
+stage 24: 2
+stage 27: 1
+stage 29: 1
+```
+
+重点风险 stage：
+
+```text
+stage 5: 53 rows removed
+stage 21: 68 rows removed
+```
+
+这说明：
+
+- keep-last 对某些 stage 的导数输入影响很大；
+- 不能未经人工审查就作为论文默认策略。
+
+### CSV 抽查
+
+policy none：
+
+```text
+derivative CSV count=13
+```
+
+policy keep-last：
+
+```text
+derivative CSV count=28
+```
+
+Stage 10：
+
+```text
+none policy row count = 1127
+keep-last policy row count = 1127
+```
+
+Stage 10 在本 manifest window 中没有重复行被移除，因此 none 和 keep-last 前几行导数一致。
+
+Stage 10 前几行摘要：
+
+```text
+elapsed_seconds  pressure_mpa  dP_dG_mpa    G_dP_dG_mpa
+0.0              114.1825       429.747543    0.000000
+1.0              114.2825      2118.502383    0.492964
+2.0              115.1625      4347.549140    2.018607
+3.0              116.2925      4487.167663    3.119502
+4.0              117.2325      3759.131627    3.479149
+```
+
+Stage 1 under keep-last：
+
+```text
+CSV row count=1198
+rows removed by keep-last=3
+```
+
+Stage 1 前几行摘要：
+
+```text
+elapsed_seconds  pressure_mpa  dP_dG_mpa       G_dP_dG_mpa
+0.0              109.8217      -287.7475       -0.000000
+1.0              109.7517      -143.5310       -0.034917
+2.0              109.7517         0.0000        0.000000
+3.0              109.7517       -20.7976       -0.015114
+4.0              109.7417      -124.9499       -0.120882
+```
+
+### 当前解释边界
+
+Phase 4F 证明：
+
+1. 人工有效压降窗口能排除主动放压段；
+2. 但 duplicate policy 对能否批量计算导数影响很大；
+3. none policy 下 15/28 candidate stage 仍被 G-time 重复阻断；
+4. keep-last policy 下 28/28 candidate stage 都能输出导数 CSV；
+5. keep-last 不是最终推荐，只是显式实验策略；
+6. stage 5 和 stage 21 这类移除大量重复行的 stage 必须人工审查；
+7. 当前仍然不是 closure。
+
+本阶段没有计算或输出：
+
+```text
+closure diagnostics
+closure pressure
+ISIP / closure 自动解释
+Carter leakoff
+PKN
+volume balance
+fracture inversion
+```
+
+### 后续建议
+
+下一步不应直接实现 closure。
+
+更合理的下一步是：
+
+```text
+Phase 4G：导数 CSV 人工审查辅助
+```
+
+候选目标：
+
+1. 从 batch summary 和 derivative CSV 中筛选需要优先人工审查的 stage；
+2. 标记 rows_removed_by_duplicate_policy 很多的 stage；
+3. 标记 dP/dG 极值异常的 stage；
+4. 标记正导数比例高的 stage；
+5. 生成纯 CSV 审查清单，不画图，不自动 closure。
+
+在进入任何 closure-candidate audit 前，至少应人工审查：
+
+```text
+stage 5
+stage 21
+所有从 blocked → ready 的 stage
+stage 10 作为 no-duplicate reference case
+```
