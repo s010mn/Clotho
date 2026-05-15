@@ -731,8 +731,15 @@ def physical_pkn_volume_balance(
     stable_min_r2: float = 0.8,
     flow_allocation: str = "stress-shadow",
     flow_allocation_exponent: float = 1.0,
+    C_coupling: str = "stage-constant",
 ) -> dict[str, Any]:
-    """Physical PKN storage volume balance with stress shadow and stable-segment C."""
+    """Physical PKN storage volume balance with stress shadow and stable-segment C.
+
+    C_coupling controls how the stage-level leakoff coefficient C_stage is mapped
+    to per-cluster C_L_i:
+      - "stage-constant" (default): C_L_i = C_stage for all i.
+      - "shadow-scaled":  C_L_i = xi_i * C_stage (legacy Phase 5D.4 coupling).
+    """
 
     base: dict[str, Any] = {
         "pkn_model_name": "physical_pkn_storage",
@@ -766,6 +773,8 @@ def physical_pkn_volume_balance(
             "pkn_segment_end": np.nan,
             "pkn_K_lp": np.nan,
             "pkn_C_status": "failed",
+            "pkn_C_coupling_method": C_coupling,
+            "pkn_C_stage": np.nan,
             "pkn_C_min": np.nan,
             "pkn_C_max": np.nan,
             "pkn_C_mean": np.nan,
@@ -793,9 +802,19 @@ def physical_pkn_volume_balance(
             "pkn_eta_max": np.nan,
             "pkn_eta_mean": np.nan,
             "pkn_eta_std": np.nan,
+            "pkn_leakoff_volume_m3": np.nan,
+            "pkn_leakoff_volume_std_m3": np.nan,
+            "pkn_nonstorage_volume_m3": np.nan,
+            "pkn_storage_fraction": np.nan,
+            "pkn_leakoff_fraction": np.nan,
+            "pkn_nonstorage_fraction": np.nan,
+            "pkn_balance_residual_mean_m3": np.nan,
+            "pkn_balance_residual_abs_max_m3": np.nan,
         })
         return out
 
+    if C_coupling not in ("stage-constant", "shadow-scaled"):
+        return _fail(f"unknown_pkn_C_coupling:{C_coupling}")
     if n_clusters < 1:
         return _fail("n_clusters_invalid")
     if not np.isfinite(E_prime_mpa) or E_prime_mpa <= 0:
@@ -831,13 +850,23 @@ def physical_pkn_volume_balance(
     H_p_m = fleak_val * H_w_m
 
     slope = seg["stable_dP_dG_slope_mpa"]
-    C_arr = np.array([
-        compute_physical_leakoff_C(slope, H_w_m, E_prime_mpa, H_p_m, tp_seconds, float(xi[i]), I_F=I_F)
-        for i in range(n_clusters)
-    ])
+    # C_stage: stage-level leakoff coefficient computed from stable dP/dG with xi=1.
+    # Phase 5D.5 lets C_L_i either equal C_stage (stage-constant) or scale by xi (shadow-scaled).
+    C_stage = compute_physical_leakoff_C(slope, H_w_m, E_prime_mpa, H_p_m, tp_seconds, 1.0, I_F=I_F)
+    if not np.isfinite(C_stage) or C_stage < 0:
+        out = _fail("invalid_C_from_stable_dP_dG")
+        out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
+        out.update(seg)
+        out["pkn_C_status"] = "failed"
+        return out
+
+    if C_coupling == "stage-constant":
+        C_arr = np.full(n_clusters, C_stage)
+    else:
+        C_arr = xi * C_stage
 
     if not np.all(np.isfinite(C_arr)) or np.any(C_arr < 0):
-        out = _fail("invalid_C_from_stable_dP_dG")
+        out = _fail("invalid_C_per_cluster")
         out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
         out.update(seg)
         out["pkn_C_status"] = "failed"
@@ -860,7 +889,12 @@ def physical_pkn_volume_balance(
     all_V_total: list[float] = []
     all_L: list[np.ndarray] = []
     all_Pnet: list[np.ndarray] = []
+    all_leakoff_total: list[float] = []
+    all_injected_total: list[float] = []
+    all_balance_residual: list[float] = []
     cluster_audit_rows: list[dict[str, Any]] = []
+
+    sqrt_tp = math.sqrt(tp_seconds)
 
     for idx in stable_indices:
         p_idx = float(pressure_mpa[idx])
@@ -869,13 +903,14 @@ def physical_pkn_volume_balance(
         if np.all(P_net_arr <= 0):
             continue
 
+        g_val = float(g_time[idx])
         # per-cluster denominator unit_i (Phase 5D.4 direct formula):
         # unit_i = K_lp * C_L_i * H_p * sqrt(tp) + 4 * C_L_i * H_p * sqrt(tp) * g
         #          + (pi * I_F / E') * H_w^2 * P_net_i
         # L_i = eta_i * V_inj / unit_i (no global Sum(unit_j * eta_j))
         unit = np.array([
             math.pi * I_F / E_prime_mpa * H_w_m ** 2 * P_net_arr[i]
-            + C_arr[i] * H_p_m * math.sqrt(tp_seconds) * (k_lp_val + 4.0 * float(g_time[idx]))
+            + C_arr[i] * H_p_m * sqrt_tp * (k_lp_val + 4.0 * g_val)
             for i in range(n_clusters)
         ])
 
@@ -893,6 +928,16 @@ def physical_pkn_volume_balance(
             for i in range(n_clusters)
         ])
 
+        # Phase 5D.5 fluid partition per cluster:
+        # leakoff_before_closure_i = L_i * K_lp * C_L_i * H_p * sqrt(tp)
+        # leakoff_G_i              = L_i * 4 * C_L_i * H_p * sqrt(tp) * g
+        # injected_i               = eta_i * V_inj
+        leakoff_before_arr = L_arr * k_lp_val * C_arr * H_p_m * sqrt_tp
+        leakoff_G_arr = L_arr * 4.0 * C_arr * H_p_m * sqrt_tp * g_val
+        leakoff_total_arr = leakoff_before_arr + leakoff_G_arr
+        injected_arr = eta * effective_injected_volume_m3
+        balance_residual_arr = injected_arr - V_f_arr - leakoff_total_arr
+
         for ci in range(n_clusters):
             cluster_audit_rows.append({
                 "stable_row_index": int(idx),
@@ -901,22 +946,35 @@ def physical_pkn_volume_balance(
                 "xi_i": float(xi[ci]),
                 "P_net_i_mpa": float(P_net_arr[ci]),
                 "C_L_i": float(C_arr[ci]),
+                "C_stage": float(C_stage),
+                "pkn_C_coupling_method": C_coupling,
                 "denominator_i_m3_per_m": float(unit[ci]),
                 "L_i_m": float(L_arr[ci]),
                 "V_f_i_m3": float(V_f_arr[ci]),
-                "g_time": float(g_time[idx]),
+                "injected_i_m3": float(injected_arr[ci]),
+                "storage_i_m3": float(V_f_arr[ci]),
+                "leakoff_before_closure_i_m3": float(leakoff_before_arr[ci]),
+                "leakoff_G_i_m3": float(leakoff_G_arr[ci]),
+                "leakoff_total_i_m3": float(leakoff_total_arr[ci]),
+                "balance_residual_i_m3": float(balance_residual_arr[ci]),
+                "g_time": g_val,
                 "elapsed_seconds": float(elapsed_seconds[idx]),
             })
 
         all_V_total.append(float(np.sum(V_f_arr)))
         all_L.append(L_arr)
         all_Pnet.append(P_net_arr)
+        all_leakoff_total.append(float(np.sum(leakoff_total_arr)))
+        all_injected_total.append(float(np.sum(injected_arr)))
+        all_balance_residual.append(float(np.sum(balance_residual_arr)))
 
     if len(all_V_total) == 0:
         out = _fail("net_pressure_nonpositive")
         out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
         out.update(seg)
         out["pkn_C_status"] = "ok"
+        out["pkn_C_coupling_method"] = C_coupling
+        out["pkn_C_stage"] = float(C_stage)
         out["pkn_C_min"] = float(np.min(C_arr))
         out["pkn_C_max"] = float(np.max(C_arr))
         out["pkn_C_mean"] = float(np.mean(C_arr))
@@ -925,11 +983,17 @@ def physical_pkn_volume_balance(
     V_arr = np.array(all_V_total)
     L_all = np.concatenate(all_L)
     Pnet_all = np.concatenate(all_Pnet)
+    leakoff_total_rows = np.array(all_leakoff_total)
+    balance_residual_rows = np.array(all_balance_residual)
+
+    storage_mean = float(np.mean(V_arr))
+    leakoff_mean = float(np.mean(leakoff_total_rows))
+    nonstorage_mean = effective_injected_volume_m3 - storage_mean
 
     result = dict(base)
     result.update({
         "pkn_volume_status": "ok",
-        "pkn_fracture_volume_m3": float(np.mean(V_arr)),
+        "pkn_fracture_volume_m3": storage_mean,
         "pkn_fracture_volume_std_m3": float(np.std(V_arr)) if len(V_arr) > 1 else 0.0,
         "pkn_half_length_mean_m": float(np.mean(L_all)),
         "pkn_half_length_std_m": float(np.std(L_all)) if len(L_all) > 1 else 0.0,
@@ -947,6 +1011,8 @@ def physical_pkn_volume_balance(
         "pkn_segment_end": seg_end,
         "pkn_K_lp": float(k_lp_val),
         "pkn_C_status": "ok",
+        "pkn_C_coupling_method": C_coupling,
+        "pkn_C_stage": float(C_stage),
         "pkn_C_min": float(np.min(C_arr)),
         "pkn_C_max": float(np.max(C_arr)),
         "pkn_C_mean": float(np.mean(C_arr)),
@@ -959,6 +1025,14 @@ def physical_pkn_volume_balance(
         "pkn_eta_max": float(np.max(eta)),
         "pkn_eta_mean": float(np.mean(eta)),
         "pkn_eta_std": float(np.std(eta)) if n_clusters > 1 else 0.0,
+        "pkn_leakoff_volume_m3": leakoff_mean,
+        "pkn_leakoff_volume_std_m3": float(np.std(leakoff_total_rows)) if len(leakoff_total_rows) > 1 else 0.0,
+        "pkn_nonstorage_volume_m3": float(nonstorage_mean),
+        "pkn_storage_fraction": float(storage_mean / effective_injected_volume_m3),
+        "pkn_leakoff_fraction": float(leakoff_mean / effective_injected_volume_m3),
+        "pkn_nonstorage_fraction": float(nonstorage_mean / effective_injected_volume_m3),
+        "pkn_balance_residual_mean_m3": float(np.mean(balance_residual_rows)),
+        "pkn_balance_residual_abs_max_m3": float(np.max(np.abs(balance_residual_rows))),
     })
     result.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
     result.update(seg)
@@ -979,6 +1053,14 @@ def build_observation_correlation_table(
 
     metrics = [
         "pkn_fracture_volume_m3",
+        "pkn_leakoff_volume_m3",
+        "pkn_nonstorage_volume_m3",
+        "pkn_storage_fraction",
+        "pkn_leakoff_fraction",
+        "pkn_nonstorage_fraction",
+        "pkn_C_stage",
+        "pkn_C_mean",
+        "legacy_mvp_pkn_fracture_volume_m3",
         "effective_injected_volume_m3",
         "raw_injected_volume_m3",
         "selected_closure_pressure_mpa",
@@ -1110,6 +1192,7 @@ def _process_stage(
     stress_shadow_alpha: float = 1.0,
     flow_allocation: str = "stress-shadow",
     flow_allocation_exponent: float = 1.0,
+    pkn_C_coupling: str = "stage-constant",
 ) -> dict[str, Any]:
     """处理单个 stage 的闭合候选分析。"""
     row: dict[str, Any] = {"stage": stage_info.stage}
@@ -1290,6 +1373,7 @@ def _process_stage(
         alpha=stress_shadow_alpha,
         flow_allocation=flow_allocation,
         flow_allocation_exponent=flow_allocation_exponent,
+        C_coupling=pkn_C_coupling,
     )
     cluster_audit_rows = physical_pkn.pop("pkn_cluster_audit_rows", [])
     row.update(physical_pkn)
@@ -1353,6 +1437,8 @@ def _empty_pkn_fields() -> dict[str, Any]:
         "pkn_segment_end": np.nan,
         "pkn_K_lp": np.nan,
         "pkn_C_status": "not_computed",
+        "pkn_C_coupling_method": "",
+        "pkn_C_stage": np.nan,
         "pkn_C_min": np.nan,
         "pkn_C_max": np.nan,
         "pkn_C_mean": np.nan,
@@ -1380,6 +1466,14 @@ def _empty_pkn_fields() -> dict[str, Any]:
         "pkn_eta_max": np.nan,
         "pkn_eta_mean": np.nan,
         "pkn_eta_std": np.nan,
+        "pkn_leakoff_volume_m3": np.nan,
+        "pkn_leakoff_volume_std_m3": np.nan,
+        "pkn_nonstorage_volume_m3": np.nan,
+        "pkn_storage_fraction": np.nan,
+        "pkn_leakoff_fraction": np.nan,
+        "pkn_nonstorage_fraction": np.nan,
+        "pkn_balance_residual_mean_m3": np.nan,
+        "pkn_balance_residual_abs_max_m3": np.nan,
         "legacy_mvp_pkn_fracture_volume_m3": np.nan,
         "legacy_mvp_pkn_half_length_mean_m": np.nan,
         "legacy_mvp_pkn_volume_status": "not_computed",
@@ -1405,6 +1499,7 @@ def run_closure_batch(
     stress_shadow_alpha: float = 1.0,
     flow_allocation: str = "stress-shadow",
     flow_allocation_exponent: float = 1.0,
+    pkn_C_coupling: str = "stage-constant",
     well: str | None = None,
 ) -> dict[str, Any]:
     """运行 closure-batch 批量闭合候选分析。
@@ -1453,6 +1548,7 @@ def run_closure_batch(
             stress_shadow_alpha=stress_shadow_alpha,
             flow_allocation=flow_allocation,
             flow_allocation_exponent=flow_allocation_exponent,
+            pkn_C_coupling=pkn_C_coupling,
         )
 
         stage_cluster_rows = result.pop("_pkn_cluster_audit_rows", [])
@@ -1518,8 +1614,12 @@ def run_closure_batch(
         cluster_audit = pd.DataFrame(
             columns=[
                 "stage", "stable_row_index", "cluster_index",
-                "eta_i", "xi_i", "P_net_i_mpa", "C_L_i",
+                "eta_i", "xi_i", "P_net_i_mpa", "C_L_i", "C_stage",
+                "pkn_C_coupling_method",
                 "denominator_i_m3_per_m", "L_i_m", "V_f_i_m3",
+                "injected_i_m3", "storage_i_m3",
+                "leakoff_before_closure_i_m3", "leakoff_G_i_m3",
+                "leakoff_total_i_m3", "balance_residual_i_m3",
                 "g_time", "elapsed_seconds",
             ]
         )

@@ -255,6 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     closure_batch.add_argument("--no-stress-shadow", "--no-stress-shadow-control", dest="no_stress_shadow", action="store_true", help="Disable stress shadow (alpha=0).")
     closure_batch.add_argument("--flow-allocation", choices=["stress-shadow", "uniform"], default="stress-shadow", help="Flow allocation method.")
     closure_batch.add_argument("--flow-allocation-exponent", default=1.0, type=float, help="Flow allocation exponent gamma (eta_i = xi_i^gamma / sum).")
+    closure_batch.add_argument("--pkn-C-coupling", choices=["stage-constant", "shadow-scaled"], default="stage-constant", help="Per-cluster leakoff coupling. stage-constant: C_L_i = C_stage; shadow-scaled: C_L_i = xi_i * C_stage (legacy Phase 5D.4 coupling).")
 
     return parser
 
@@ -863,6 +864,7 @@ def _run_closure_batch(args: argparse.Namespace) -> int:
         stress_shadow_alpha=0.0 if args.no_stress_shadow else args.stress_shadow_alpha,
         flow_allocation=args.flow_allocation,
         flow_allocation_exponent=args.flow_allocation_exponent,
+        pkn_C_coupling=args.pkn_C_coupling,
         well=args.well,
     )
     paths = write_closure_batch_outputs(

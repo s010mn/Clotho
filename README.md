@@ -42,11 +42,13 @@ stage 参数表
   - 有效进缝液量修正（井筒存储 + 射孔摩阻）；
   - physical PKN storage volume（V_f = π I_F/E' · L · H_w² · P_net）；
   - direct per-cluster 半长反演（Phase 5D.4）：`L_i = η_i · V_inj / unit_i`，per-cluster denominator；
+  - C-coupling 控制（Phase 5D.5, `--pkn-C-coupling`）：`stage-constant`（baseline, C_L_i=C_stage）或 `shadow-scaled`（control, C_L_i=ξ_i·C_stage）；
+  - fluid partition metrics（Phase 5D.5）：storage / leakoff / nonstorage volumes 和 fractions；
   - stress shadow linear system（(I+αF)ξ=1）+ stress-shadow-weighted flow allocation（η_i = ξ_i/Σξ_i）；
   - stable P-vs-G segment detection + leakoff coefficient C；
-  - cluster-level audit（`--cluster-output`：stage, stable_row_index, cluster_index, eta_i, xi_i, denominator_i, L_i, V_f_i）；
+  - cluster-level audit（`--cluster-output`：stage, stable_row_index, cluster_index, eta_i, xi_i, C_L_i, C_stage, denominator_i, L_i, V_f_i, injected_i, leakoff_*, balance_residual_i）；
   - legacy MVP PKN 结果保留为 `legacy_mvp_pkn_*` 字段；
-  - 观测相关性对照（微地震/电磁）；
+  - 观测相关性对照（微地震/电磁，含 storage/leakoff/nonstorage proxies）；
   - 所有结果标记 `closure_is_candidate=True, closure_is_final_interpretation=False`。
 
 ## 当前不做

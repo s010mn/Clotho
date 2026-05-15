@@ -156,3 +156,24 @@ Phase 5D.4 实现了 direct per-cluster denominator `L_i = η_i · V_inj / unit_
 - 或重新表述 cluster-level flow imbalance 的耦合模型（簇间泄滤面积/时间不同）。
 
 这是 *physical assumption* 层面的改动，不是 numerical fix。需要先与人类确认物理口径。
+
+**Phase 5D.5 进度**: 已实现 `--pkn-C-coupling {stage-constant, shadow-scaled}`，
+其中 stage-constant 为 baseline，shadow-scaled 为 control。
+stage-constant 已让 stage total V_f 随 ξ/η 变化（test_stage_constant_breaks_previous_cancellation 通过）。
+但 storage 与微地震仍为负相关；leakoff/nonstorage 出现正相关，但与 raw/effective_injected 共线性强。
+后续需要 Carter calibration 区分纯 leakoff 与注入规模效应。
+
+## 25. Carter leakoff calibration 分离纯 leakoff 与注入规模效应
+
+Phase 5D.5 发现 `pkn_leakoff_volume_m3` / `pkn_nonstorage_volume_m3` 与电磁面积呈 Pearson +0.594，
+但 `effective_injected_volume_m3` 自身与电磁面积 Pearson +0.807。
+当前 pkn_storage_fraction <10%，nonstorage ≈ effective_injected，
+所以 leakoff/nonstorage 的正相关无法独立于注入规模解释。
+
+需要：
+
+- 独立估计 Carter leakoff（不依赖 effective_injected）；
+- 比较 pkn_leakoff_volume_m3 与 effective_injected_volume_m3 的残差 vs 微地震/电磁；
+- 或用 leakoff_fraction (per-volume) 替代绝对体积，剔除规模效应；
+- pkn_leakoff_fraction 当前已实现，但 Pearson 较弱（vs micro +0.233, vs EM +0.087）；
+- 需要更高维分析（partial correlation 或 multiple regression）。

@@ -130,6 +130,41 @@ Phase 5D.4 reference smoke：
 - 这是 *physical assumption* 层面的耦合，不是公式实现错误；
 - 后续要让 stress shadow 真正改变 stage total V_f，必须 decouple C_L 与 ξ（如把 C_L 取为 stage-level 标量、或独立的 segment slope）。
 
+### 4.5 Phase 5D.5：C-coupling control 和 fluid partition metrics
+
+为了回答 4.4 的开放问题，Phase 5D.5 新增一个 C-coupling 控制：
+
+```
+C_L_i = C_stage            # stage-constant (baseline)
+C_L_i = ξ_i · C_stage      # shadow-scaled (legacy Phase 5D.4 control)
+```
+
+其中 `C_stage = -(I_F·H_w²)/(E'·H_p·√tp) · dP/dG`，由稳定段 dP/dG 推得。stage-constant 是 Phase 5D.5 起的 baseline；shadow-scaled 保留为 control，用来重现 Phase 5D.4 的代数抵消。
+
+Phase 5D.5 同时引入 fluid partition metrics：
+
+```
+storage_i              = V_f_i
+leakoff_before_i       = L_i · K_lp · C_L_i · H_p · √tp
+leakoff_G_i            = L_i · 4 · C_L_i · H_p · √tp · g
+leakoff_total_i        = leakoff_before_i + leakoff_G_i
+injected_i             = η_i · V_inj
+balance_residual_i     = injected_i - storage_i - leakoff_total_i
+```
+
+stage 汇总（stable rows 上的均值）：
+
+```
+pkn_fracture_volume_m3        = mean Σ_i storage_i
+pkn_leakoff_volume_m3         = mean Σ_i leakoff_total_i
+pkn_nonstorage_volume_m3      = V_inj_eff - pkn_fracture_volume_m3
+pkn_storage_fraction          = pkn_fracture_volume_m3 / V_inj_eff
+pkn_leakoff_fraction          = pkn_leakoff_volume_m3 / V_inj_eff
+pkn_nonstorage_fraction       = pkn_nonstorage_volume_m3 / V_inj_eff
+```
+
+按 L_i = η_i · V_inj / unit_i 的定义，`balance_residual_i ≡ 0`（单位测试断言）。
+
 闭合候选覆盖：
 
 - physical PKN 使用 selected closure candidate（Barree 优先，McClure 备选）；
@@ -138,64 +173,83 @@ Phase 5D.4 reference smoke：
 
 ## 5. 当前核心相关性
 
-### 5.1 主指标（n=28）
+### 5.1 主指标（n=28, Phase 5D.5 stage-constant C baseline）
 
 | 指标 | target | Pearson | Spearman | n |
 |------|--------|--------:|---------:|--:|
-| **physical pkn_fracture_volume_m3** | **microseismic_affected_volume** | **-0.259** | **-0.292** | 28 |
-| **physical pkn_fracture_volume_m3** | **electromagnetic_affected_area** | **0.075** | **0.170** | 28 |
-| no-shadow physical pkn (α=0) | microseismic_affected_volume | -0.259 | -0.292 | 28 |
-| no-shadow physical pkn (α=0) | electromagnetic_affected_area | 0.075 | 0.170 | 28 |
+| **physical pkn_fracture_volume_m3** (storage) | **microseismic_affected_volume** | **-0.232** | **-0.255** | 28 |
+| **physical pkn_fracture_volume_m3** (storage) | **electromagnetic_affected_area** | **+0.019** | **+0.140** | 28 |
+| pkn_leakoff_volume_m3 | microseismic_affected_volume | +0.237 | +0.352 | 28 |
+| pkn_leakoff_volume_m3 | electromagnetic_affected_area | **+0.594** | +0.172 | 28 |
+| pkn_nonstorage_volume_m3 | microseismic_affected_volume | +0.237 | +0.352 | 28 |
+| pkn_nonstorage_volume_m3 | electromagnetic_affected_area | **+0.594** | +0.172 | 28 |
+| pkn_storage_fraction | microseismic_affected_volume | -0.233 | -0.264 | 28 |
+| pkn_storage_fraction | electromagnetic_affected_area | -0.087 | +0.130 | 28 |
+| pkn_leakoff_fraction | microseismic_affected_volume | +0.233 | +0.264 | 28 |
+| pkn_leakoff_fraction | electromagnetic_affected_area | +0.087 | -0.130 | 28 |
 
-### 5.2 半缝长指标
+### 5.2 shadow-scaled C control（Phase 5D.4 口径，n=28）
+
+| 指标 | target | Pearson | Spearman | n |
+|------|--------|--------:|---------:|--:|
+| pkn_fracture_volume_m3 (storage) | microseismic_affected_volume | -0.259 | -0.292 | 28 |
+| pkn_fracture_volume_m3 (storage) | electromagnetic_affected_area | +0.075 | +0.170 | 28 |
+| pkn_leakoff_volume_m3 | microseismic_affected_volume | +0.286 | +0.308 | 28 |
+| pkn_leakoff_volume_m3 | electromagnetic_affected_area | +0.361 | +0.035 | 28 |
+| pkn_nonstorage_volume_m3 | microseismic_affected_volume | +0.286 | +0.308 | 28 |
+| pkn_nonstorage_volume_m3 | electromagnetic_affected_area | +0.361 | +0.035 | 28 |
+
+stage-constant C 与 shadow-scaled C 给出不同的 storage 数值（例如 stage 1: 204 vs 474 m³），证明 Phase 5D.4 的 stage-total 不变性来自 coupled assumption 而非公式实现错误。
+
+### 5.3 半缝长 / Legacy MVP / 注入量控制变量（n=28）
 
 | 指标 | target | Pearson | Spearman | n |
 |------|--------|--------:|---------:|--:|
 | physical pkn_half_length_mean_m | microseismic_affected_volume | -0.134 | -0.081 | 28 |
 | physical pkn_half_length_mean_m | electromagnetic_affected_area | -0.096 | -0.199 | 28 |
-| legacy MVP pkn_half_length_mean_m | microseismic_affected_volume | 0.295 | 0.259 | 28 |
-| legacy MVP pkn_half_length_mean_m | electromagnetic_affected_area | -0.049 | -0.176 | 28 |
-
-### 5.3 Legacy MVP 与控制变量
-
-| 指标 | target | Pearson | Spearman | n |
-|------|--------|--------:|---------:|--:|
-| legacy MVP pkn_fracture_volume_m3 | microseismic_affected_volume | 0.248 | 0.205 | 28 |
-| legacy MVP pkn_fracture_volume_m3 | electromagnetic_affected_area | 0.335 | 0.062 | 28 |
-| raw_injected_volume_m3 | electromagnetic_affected_area | 0.807 | 0.250 | 28 |
-| effective_injected_volume_m3 | electromagnetic_affected_area | 0.807 | 0.250 | 28 |
-| raw_injected_volume_m3 | microseismic_affected_volume | 0.120 | 0.188 | 28 |
+| legacy MVP pkn_half_length_mean_m | microseismic_affected_volume | +0.295 | +0.259 | 28 |
+| legacy MVP pkn_fracture_volume_m3 | microseismic_affected_volume | +0.248 | +0.205 | 28 |
+| legacy MVP pkn_fracture_volume_m3 | electromagnetic_affected_area | +0.335 | +0.062 | 28 |
+| raw_injected_volume_m3 | electromagnetic_affected_area | +0.807 | +0.250 | 28 |
+| effective_injected_volume_m3 | electromagnetic_affected_area | +0.807 | +0.250 | 28 |
+| raw_injected_volume_m3 | microseismic_affected_volume | +0.120 | +0.188 | 28 |
 
 ### 5.4 解读
 
-- physical PKN 体积与微地震波及体积呈**负相关**（Pearson -0.259, Spearman -0.292, n=28）；
-- physical PKN 体积与广域电磁面积仅**弱相关**（Pearson 0.075, Spearman 0.170, n=28）；
-- legacy MVP 体积与微地震呈弱正相关（Pearson 0.248），说明 physical PKN 链路（stable segment / C / volume balance）与简化 MVP（Sneddon average width）对 stage 间排序不同；
-- physical PKN 半缝长与微地震也为弱负相关（-0.134），方向与旧半缝长口径的负相关一致；
-- physical formula 后负相关没有消失，是科研结果，不是要掩盖的问题；
-- **不能说"验证成功"**。
+- physical PKN **storage** 体积与微地震波及体积仍呈**负相关**（Pearson -0.232 stage-constant / -0.259 shadow-scaled），方向稳健，不能说"已被验证"；
+- 当前数据下 pkn_storage_fraction 极小（多数 stage <10%，stage 5 仅 0.4%），意味着大部分有效注入体积没有计入主裂缝 storage，被归到 leakoff/nonstorage；
+- **新发现的正相关 proxy**（Phase 5D.5 stage-constant C, n=28）：
+  - `pkn_leakoff_volume_m3` vs `electromagnetic_affected_area`：Pearson +0.594；
+  - `pkn_nonstorage_volume_m3` vs `electromagnetic_affected_area`：Pearson +0.594（与 leakoff 完全相同，因为 storage_fraction 太小，nonstorage ≈ effective_injected）；
+  - `pkn_leakoff_volume_m3` vs `microseismic_affected_volume`：Pearson +0.237, Spearman +0.352；
+- **重要警示**：因为 pkn_storage_fraction 很小，`pkn_nonstorage_volume_m3 = effective_injected − storage ≈ effective_injected`，所以它与 EM 的 +0.594 与 `effective_injected_volume_m3 → EM` 的 +0.807 在同一口径里。这部分相关性可能更多来自 raw/effective 注入量而非 G函数反演本身；
+- `pkn_leakoff_volume_m3` 在数值上独立于 effective_injected（包含 L_i, C_L, K_lp, g），但仍与 leakoff fraction 高度相关；
+- 因此 leakoff/nonstorage 的 Pearson > 0.3 不能直接当作 G函数 PKN 模型的物理验证；只能作为 *proxy*，需要进一步分离纯 leakoff 与注入规模效应；
+- **不能说"找到正相关 → 模型正确"**。
 
-## 6. 为什么会出现负相关
+## 6. 为什么 storage 体积出现负相关
 
 只写候选解释，不写定论：
 
-- G函数/PKN体积更接近压力响应等效主缝储集体积；
+- G函数/PKN storage volume 反映的是主裂缝压力响应等效储集体积；
 - 微地震波及体积更接近事件云/裂缝网络波及范围；
 - 广域电磁面积更接近导电流体波及响应；
 - 主缝储集体积越集中，未必对应更大的微地震波及体积；
+- pkn_storage_fraction 普遍 <10% 说明大部分有效液量不被主缝储集模型记入；
 - 裂缝影响段 2–7、断层段 24、缺窗口段 4/25 混在全段相关性中；
 - stable segment / closure candidate / C 的自动选择仍需人工复核；
 - water hammer / early transient 可能影响早期导数；
 - 有效液量、射孔摩阻、井筒存储尚未完成标定。
 
-## 7. stress shadow 解释
+## 7. stress shadow / C-coupling 解释
 
-stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0 no-shadow control + uniform η control）。
+stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0 no-shadow control + uniform η control + stage-constant vs shadow-scaled C control）。
 
-- stage-level total physical storage volume 在 baseline（α=1, shadow_eta）、uniform_eta 与 no-shadow（α=0）三种 control 中完全相同（max abs diff ~ 1e-13，纯浮点噪声）；
-- Phase 5D.3 中归因为 "global denominator 抵消" 的现象，Phase 5D.4 修正公式后仍然存在，但根因不是 global denominator，而是 *coupled assumption* `P_net_i ∝ ξ_i` 与 `C_L_i ∝ ξ_i` 在代数上把 ξ 从 stage total V_f 中消去（详见 4.4）；
-- 因此本轮 stage-level 相关性不受 shadow control 影响；
-- 后续若要让 stress shadow 改变 stage total volume，需要解耦 C_L 与 ξ，或重新定义簇级 leakoff 模型。
+- 当 C_L_i = ξ_i · C_stage（shadow-scaled）时，stage-level total physical storage volume 在 baseline（α=1, shadow_eta）、uniform_eta 与 no-shadow（α=0）三种 control 中完全相同（max abs diff ~ 1e-13）。这是 Phase 5D.3/5D.4 观察到的现象；
+- Phase 5D.4 已证明这不是 global denominator 残留，而是 *coupled assumption* `P_net_i ∝ ξ_i` 与 `C_L_i ∝ ξ_i` 在代数上把 ξ 从 stage total V_f 中消去（详见 4.4）；
+- Phase 5D.5 用 C_L_i = C_stage（stage-constant）解耦 C_L 与 ξ，此时 stage total V_f 在 shadow / uniform η 之间不再相等（单位测试 `test_stage_constant_breaks_previous_cancellation` 已验证），并产出不同的 storage / leakoff 数值；
+- 因此 stage-constant 是更直接的物理 baseline，shadow-scaled 仅作为 coupled-assumption control；
+- 但要让 stress shadow / flow allocation 真正改变 *主指标 storage 与外部观测的相关性方向*，还需要进一步标定 C 来源（DAS/PLT/Carter）。
 
 ## 8. I_F 说明
 
@@ -208,11 +262,12 @@ stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0
 
 ## 9. 组会建议讲法
 
-1. 已实现 physical PKN storage volume，不再使用旧 MVP 体积作为主指标；
+1. 已实现 physical PKN storage volume + fluid partition（storage / leakoff / nonstorage），不再使用旧 MVP 体积作为唯一主指标；
 2. 30 段 full-well output，28 段 computed（27 Barree + 1 McClure），2 段 placeholder（stage 4/25 缺有效 falloff）；
-3. physical PKN 体积与微地震波及体积呈负相关（Pearson -0.259, n=28）；
-4. 这说明 G函数/PKN 等效体积与微地震/电磁波及量存在口径差异，不能简单认为外部观测会正相关验证；
-5. 下一步应人工复核闭合候选、稳定段 C、段型分类和有效液量标定。
+3. Phase 5D.5 新增 C-coupling 控制：stage-constant 是 baseline，shadow-scaled 仅作为 coupled-assumption control；
+4. physical PKN **storage** 体积与微地震波及体积仍呈负相关（Pearson -0.232 stage-constant / -0.259 shadow-scaled, n=28）；
+5. 新发现 leakoff/nonstorage proxy 与电磁面积呈强正相关（Pearson +0.594），但因 storage_fraction 太小（<10%），nonstorage ≈ effective_injected，正相关可能更多来自注入规模而非反演本身；
+6. 下一步应人工复核闭合候选、稳定段 C、段型分类、有效液量标定，并尝试 Carter leakoff calibration 区分纯 leakoff 与注入规模效应。
 
 ## 10. 明确不能写
 
@@ -220,6 +275,7 @@ stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0
 
 - "G函数反演体积已被微地震验证"；
 - "G函数反演体积已被广域电磁验证"；
+- "leakoff/nonstorage 正相关 → 模型已被验证"；
 - "负相关问题已经消失"；
 - "physical PKN 结果证明模型错误"；
 - "closure pressure 已最终确定"；
@@ -227,11 +283,12 @@ stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0
 
 可以写：
 
-- "physical PKN 体积与微地震波及体积呈负相关，是当前最重要的待解释结果"；
+- "physical PKN storage 体积与微地震波及体积呈负相关，是当前最重要的待解释结果"；
+- "leakoff / nonstorage proxy 与电磁面积呈正相关，但需要进一步分离纯 leakoff 与注入规模效应"；
 - "外部观测与 G函数反演体积之间可能存在物理口径差异"；
 - "当前结果是 candidate/estimate，需要人工图形复核"；
 - "旧半缝长口径的负相关仍然存在于历史数据中"。
 
 ## 11. Figures
 
-Figures generated outside repo under `/tmp/gfunction-ref-audit-phase5d4/figures/` (Phase 5D.4 direct per-cluster denominator).
+Figures generated outside repo under `/tmp/gfunction-ref-audit-phase5d5/figures/` (Phase 5D.5 fluid partition: storage / leakoff / nonstorage vs microseismic / EM, stage-constant C baseline).

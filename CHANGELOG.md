@@ -3010,3 +3010,68 @@ summary-cluster max abs diff: ~ 1e-13 (perfect agreement)
 - 不提交 PNG / CSV / 真实数据；
 - 不 push master；
 - 下一步若要让 stress shadow 真正影响 stage total，需要 decouple C_L 与 ξ（或 reformulate coupled cluster flow imbalance model）。
+
+## Phase 5D.5 — fluid partition and C-coupling sensitivity
+
+Branch: `sprint`
+
+核心变更：
+
+- 新增 CLI flag `--pkn-C-coupling {stage-constant, shadow-scaled}`，默认 `stage-constant`；
+- `physical_pkn_volume_balance` 计算 stage-level `C_stage`，再按 coupling 映射到 per-cluster `C_L_i`：
+  - `stage-constant`: `C_L_i = C_stage`（baseline, decouple C 与 ξ）；
+  - `shadow-scaled`: `C_L_i = ξ_i · C_stage`（legacy Phase 5D.4 coupling, control）；
+- stage summary 新增 fluid partition 字段：
+  - `pkn_leakoff_volume_m3` / `pkn_leakoff_volume_std_m3`
+  - `pkn_nonstorage_volume_m3`
+  - `pkn_storage_fraction` / `pkn_leakoff_fraction` / `pkn_nonstorage_fraction`
+  - `pkn_balance_residual_mean_m3` / `pkn_balance_residual_abs_max_m3`
+  - `pkn_C_coupling_method` / `pkn_C_stage`；
+- cluster audit 新增列：
+  - `C_stage`, `pkn_C_coupling_method`
+  - `injected_i_m3`, `storage_i_m3`
+  - `leakoff_before_closure_i_m3`, `leakoff_G_i_m3`, `leakoff_total_i_m3`
+  - `balance_residual_i_m3`；
+- correlation table 新增 metrics：`pkn_leakoff_volume_m3`, `pkn_nonstorage_volume_m3`, `pkn_storage_fraction`, `pkn_leakoff_fraction`, `pkn_nonstorage_fraction`, `pkn_C_stage`, `pkn_C_mean`；
+- 新增 7 tests（TestCCouplingAndFluidPartition）：
+  - stage-constant C → C_L 均匀；
+  - shadow-scaled C → C_L_i ∝ ξ_i；
+  - stage-constant 解除 cancellation（shadow_eta ≠ uniform_eta），shadow-scaled 仍然抵消；
+  - balance_residual_i ≡ 0（per-cluster water mass balance check）；
+  - pkn_nonstorage_volume_m3 = effective_injected - storage 恒等式；
+  - correlation table 含 fluid partition metrics；
+  - CLI smoke 含 `--pkn-C-coupling`；
+- 170 tests pass（163 + 7 new）。
+
+关键发现（well4, 30 stages, Phase 4K manifest）：
+
+stage-constant C baseline（n=28）：
+
+- `pkn_fracture_volume_m3` (storage) vs microseismic: Pearson -0.232, Spearman -0.255；
+- `pkn_fracture_volume_m3` (storage) vs EM: Pearson +0.019；
+- `pkn_leakoff_volume_m3` vs microseismic: Pearson +0.237, Spearman +0.352；
+- `pkn_leakoff_volume_m3` vs EM: Pearson +0.594；
+- `pkn_nonstorage_volume_m3` vs EM: Pearson +0.594（与 leakoff 完全一致，因为 storage_fraction <10%）；
+- 因此 storage 仍然与微地震负相关，但 leakoff/nonstorage 与电磁正相关（注意：正相关可能更多来自注入规模而非反演本身）。
+
+shadow-scaled C control（n=28）：
+
+- 重现 Phase 5D.4 结果：storage 与微地震 Pearson -0.259，leakoff +0.286 vs micro, +0.361 vs EM；
+- shadow_eta 与 uniform_eta / no_shadow 仍然给出相同 storage（C ∝ ξ 抵消）。
+
+stage 1 storage 数值对比：
+- stage-constant C: 204 m³
+- shadow-scaled C: 474 m³
+说明 Phase 5D.4 的 stage-total 不变性是 coupled assumption 引起的，不是公式实现错误。
+
+边界（5D.5）：
+
+- physical PKN **storage** 仍是 canonical metric；
+- leakoff/nonstorage 只作为 proxy，不作为 G函数模型的 validation；
+- 正相关 proxy 与 raw/effective_injected 共线性较强，需要后续 Carter calibration 分离纯 leakoff 与注入规模效应；
+- I_F 不变（仍为 0.722464726919）；
+- H_w 不变（50 m fixed）；
+- direct per-cluster denominator 不变；
+- closure outputs remain candidates, not final interpretation；
+- 不提交 PNG / CSV / 真实数据；
+- 不 push master。

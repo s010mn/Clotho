@@ -1309,3 +1309,257 @@ class TestPerClusterDenominator:
                 f"stage {stage_num}: cluster-audit V_f_i sum mean {mean_v} != "
                 f"summary pkn_fracture_volume_m3 {row['pkn_fracture_volume_m3']}"
             )
+
+
+class TestCCouplingAndFluidPartition:
+    """Phase 5D.5: C_coupling control and fluid partition metrics."""
+
+    def _build_inputs(
+        self,
+        *,
+        n_clusters: int = 3,
+        spacings: float | list[float] = 10.0,
+        alpha: float = 1.0,
+        flow_allocation: str = "stress-shadow",
+        effective_volume: float = 3000.0,
+    ) -> dict:
+        n = 50
+        tp = 600.0
+        elapsed = np.arange(1, n + 1, dtype=float)
+        delta = elapsed / tp
+        g_time = np.asarray(nolte_g_time(delta, 0.8), dtype=float)
+        pressure = 120.0 - 3.0 * g_time
+        E_prime = 33.3 * 1000.0 / (1.0 - 0.23 ** 2)
+        return dict(
+            n_clusters=n_clusters,
+            cluster_spacings_m=spacings,
+            H_w_m=50.0,
+            fleak=0.5,
+            E_prime_mpa=E_prime,
+            closure_pressure_mpa=110.0,
+            minimum_stress_prior_mpa=99.1,
+            perforation_friction_mpa=0.0,
+            g_time=g_time,
+            pressure_mpa=pressure,
+            elapsed_seconds=elapsed,
+            closure_index=40,
+            tp_seconds=tp,
+            g_function_m=0.8,
+            effective_injected_volume_m3=effective_volume,
+            alpha=alpha,
+            flow_allocation=flow_allocation,
+        )
+
+    def test_stage_constant_C_makes_C_L_uniform(self):
+        result = physical_pkn_volume_balance(**self._build_inputs(), C_coupling="stage-constant")
+        assert result["pkn_volume_status"] == "ok"
+        assert result["pkn_C_coupling_method"] == "stage-constant"
+        rows = result["pkn_cluster_audit_rows"]
+        assert len(rows) > 0
+        c_stage = result["pkn_C_stage"]
+        for r in rows:
+            assert r["C_L_i"] == pytest.approx(c_stage, rel=1e-12), (
+                f"stage-constant must give C_L_i == C_stage; got C_L_i={r['C_L_i']}, C_stage={c_stage}"
+            )
+
+    def test_shadow_scaled_C_makes_C_L_proportional_to_xi(self):
+        result = physical_pkn_volume_balance(**self._build_inputs(), C_coupling="shadow-scaled")
+        assert result["pkn_volume_status"] == "ok"
+        assert result["pkn_C_coupling_method"] == "shadow-scaled"
+        rows = result["pkn_cluster_audit_rows"]
+        assert len(rows) > 0
+        c_stage = result["pkn_C_stage"]
+        for r in rows:
+            expected = r["xi_i"] * c_stage
+            assert r["C_L_i"] == pytest.approx(expected, rel=1e-12), (
+                f"shadow-scaled must give C_L_i = xi_i * C_stage; got {r['C_L_i']}, expected {expected}"
+            )
+
+    def test_stage_constant_breaks_previous_cancellation(self):
+        """stage-constant C decouples C_L from xi, so stress shadow and uniform eta
+        produce different stage total V_f. shadow-scaled control reproduces the
+        Phase 5D.4 cancellation."""
+        common = self._build_inputs(n_clusters=4, spacings=5.0, alpha=1.0)
+        common.pop("flow_allocation", None)
+
+        stage_const_shadow = physical_pkn_volume_balance(
+            **common, flow_allocation="stress-shadow", C_coupling="stage-constant"
+        )
+        stage_const_uniform = physical_pkn_volume_balance(
+            **common, flow_allocation="uniform", C_coupling="stage-constant"
+        )
+        shadow_scaled_shadow = physical_pkn_volume_balance(
+            **common, flow_allocation="stress-shadow", C_coupling="shadow-scaled"
+        )
+        shadow_scaled_uniform = physical_pkn_volume_balance(
+            **common, flow_allocation="uniform", C_coupling="shadow-scaled"
+        )
+
+        v_stage_const_shadow = stage_const_shadow["pkn_fracture_volume_m3"]
+        v_stage_const_uniform = stage_const_uniform["pkn_fracture_volume_m3"]
+        assert v_stage_const_shadow != pytest.approx(v_stage_const_uniform, rel=1e-6), (
+            "stage-constant C: shadow_eta and uniform_eta must yield different stage total V_f; "
+            f"got {v_stage_const_shadow} vs {v_stage_const_uniform}"
+        )
+
+        v_shadow_scaled_shadow = shadow_scaled_shadow["pkn_fracture_volume_m3"]
+        v_shadow_scaled_uniform = shadow_scaled_uniform["pkn_fracture_volume_m3"]
+        assert v_shadow_scaled_shadow == pytest.approx(v_shadow_scaled_uniform, rel=1e-6), (
+            "shadow-scaled C: shadow_eta and uniform_eta must produce identical stage total V_f "
+            "(coupled cancellation control); "
+            f"got {v_shadow_scaled_shadow} vs {v_shadow_scaled_uniform}"
+        )
+
+    def test_fluid_partition_balance_residual(self):
+        """For each cluster: injected_i = storage_i + leakoff_total_i + residual_i,
+        residual must be exactly zero by definition of L_i = eta_i * V_inj / unit_i."""
+        result = physical_pkn_volume_balance(**self._build_inputs(), C_coupling="stage-constant")
+        assert result["pkn_volume_status"] == "ok"
+        rows = result["pkn_cluster_audit_rows"]
+        for r in rows:
+            implied_balance = r["injected_i_m3"] - r["storage_i_m3"] - r["leakoff_total_i_m3"]
+            assert r["balance_residual_i_m3"] == pytest.approx(implied_balance, rel=1e-9, abs=1e-9)
+            assert abs(r["balance_residual_i_m3"]) < 1e-6 * max(1.0, r["injected_i_m3"]), (
+                f"balance residual not ~0 at row {r['stable_row_index']}, cluster {r['cluster_index']}: "
+                f"injected={r['injected_i_m3']}, storage={r['storage_i_m3']}, leakoff={r['leakoff_total_i_m3']}, "
+                f"residual={r['balance_residual_i_m3']}"
+            )
+
+    def test_pkn_nonstorage_volume_identity(self):
+        result = physical_pkn_volume_balance(**self._build_inputs(), C_coupling="stage-constant")
+        assert result["pkn_volume_status"] == "ok"
+        v_eff = 3000.0
+        assert result["pkn_nonstorage_volume_m3"] == pytest.approx(
+            v_eff - result["pkn_fracture_volume_m3"], rel=1e-9
+        )
+        assert result["pkn_storage_fraction"] == pytest.approx(
+            result["pkn_fracture_volume_m3"] / v_eff, rel=1e-9
+        )
+        assert result["pkn_nonstorage_fraction"] == pytest.approx(
+            1.0 - result["pkn_storage_fraction"], rel=1e-9
+        )
+
+    def test_correlation_metrics_include_nonstorage_and_leakoff(self, tmp_path: Path):
+        stage_dir = tmp_path / "stage_data"
+        stage_dir.mkdir()
+        shut_in_1 = _write_synthetic_stage_csv(stage_dir / "stage_01.csv", n_pre=50, n_post=150)
+        shut_in_2 = _write_synthetic_stage_csv(stage_dir / "stage_02.csv", n_pre=50, n_post=150)
+
+        params = pd.DataFrame([
+            {"well": "W1", "stage": 1, "file": "stage_data/stage_01.csv",
+             "shut_in": shut_in_1, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25},
+            {"well": "W1", "stage": 2, "file": "stage_data/stage_02.csv",
+             "shut_in": shut_in_2, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25},
+        ])
+        params.to_csv(tmp_path / "stage_params.csv", index=False)
+
+        manifest = pd.DataFrame([
+            {"stage": 1, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+            {"stage": 2, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+        ])
+        manifest.to_csv(tmp_path / "manifest.csv", index=False)
+
+        observations = pd.DataFrame([
+            {"stage": 1, "microseismic_affected_volume": 150.0, "electromagnetic_affected_area": 18000.0},
+            {"stage": 2, "microseismic_affected_volume": 170.0, "electromagnetic_affected_area": 19000.0},
+        ])
+        observations.to_csv(tmp_path / "observations.csv", index=False)
+
+        result = run_closure_batch(
+            stage_params_path=tmp_path / "stage_params.csv",
+            well_root=tmp_path,
+            manifest_path=tmp_path / "manifest.csv",
+            observations_path=tmp_path / "observations.csv",
+            volume_column="total_volume",
+            rate_time_unit="minute",
+            min_rate=10.0,
+            g_time_m=0.8,
+            closure_min_elapsed_seconds=5.0,
+            elapsed_duplicate_policy="keep-last",
+            pressure_source="estimated-bottomhole",
+        )
+        corr = result["correlation"]
+        assert corr is not None
+        metric_set = set(corr["metric"].astype(str))
+        for metric in [
+            "pkn_fracture_volume_m3",
+            "pkn_leakoff_volume_m3",
+            "pkn_nonstorage_volume_m3",
+            "pkn_storage_fraction",
+            "pkn_leakoff_fraction",
+            "pkn_nonstorage_fraction",
+            "pkn_C_stage",
+            "pkn_C_mean",
+        ]:
+            assert metric in metric_set, f"correlation table missing metric {metric}"
+
+    def test_cli_smoke_with_C_coupling(self, tmp_path: Path):
+        stage_dir = tmp_path / "stage_data"
+        stage_dir.mkdir()
+        shut_in_1 = _write_synthetic_stage_csv(stage_dir / "stage_01.csv", n_pre=50, n_post=150)
+        shut_in_2 = _write_synthetic_stage_csv(stage_dir / "stage_02.csv", n_pre=50, n_post=150)
+
+        params = pd.DataFrame([
+            {"well": "W1", "stage": 1, "file": "stage_data/stage_01.csv",
+             "shut_in": shut_in_1, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25,
+             "num_clusters": 4, "cluster_spacings": "10;10;10", "fleak": 0.5, "m": 0.8},
+            {"well": "W1", "stage": 2, "file": "stage_data/stage_02.csv",
+             "shut_in": shut_in_2, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25,
+             "num_clusters": 4, "cluster_spacings": "10;10;10", "fleak": 0.5, "m": 0.8},
+        ])
+        params_path = tmp_path / "stage_params.csv"
+        params.to_csv(params_path, index=False)
+
+        manifest = pd.DataFrame([
+            {"stage": 1, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+            {"stage": 2, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+        ])
+        manifest_path = tmp_path / "manifest.csv"
+        manifest.to_csv(manifest_path, index=False)
+
+        output_path = tmp_path / "closure_summary.csv"
+        cluster_path = tmp_path / "cluster_audit.csv"
+
+        from clotho.cli import main
+        exit_code = main([
+            "closure-batch",
+            "--stage-params", str(params_path),
+            "--well-root", str(tmp_path),
+            "--manifest", str(manifest_path),
+            "--output", str(output_path),
+            "--cluster-output", str(cluster_path),
+            "--volume-column", "total_volume",
+            "--rate-time-unit", "minute",
+            "--min-rate", "10",
+            "--g-time-m", "0.8",
+            "--closure-min-elapsed-seconds", "5",
+            "--elapsed-duplicate-policy", "keep-last",
+            "--pressure-source", "estimated-bottomhole",
+            "--pkn-C-coupling", "stage-constant",
+        ])
+        assert exit_code == 0
+        summary = pd.read_csv(output_path)
+        for col in [
+            "pkn_C_coupling_method",
+            "pkn_fracture_volume_m3",
+            "pkn_leakoff_volume_m3",
+            "pkn_nonstorage_volume_m3",
+            "pkn_storage_fraction",
+            "pkn_leakoff_fraction",
+            "pkn_nonstorage_fraction",
+        ]:
+            assert col in summary.columns, f"summary missing column {col}"
+        ok_rows = summary[summary["pkn_volume_status"] == "ok"]
+        assert (ok_rows["pkn_C_coupling_method"] == "stage-constant").all()
+
+        cluster = pd.read_csv(cluster_path)
+        for col in [
+            "C_stage", "pkn_C_coupling_method", "injected_i_m3", "storage_i_m3",
+            "leakoff_before_closure_i_m3", "leakoff_G_i_m3", "leakoff_total_i_m3",
+            "balance_residual_i_m3",
+        ]:
+            assert col in cluster.columns, f"cluster audit missing column {col}"
