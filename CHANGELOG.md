@@ -1866,3 +1866,26 @@ stage 21
 所有从 blocked → ready 的 stage
 stage 10 作为 no-duplicate reference case
 ```
+
+## Phase 4G：导数 CSV 人工审查辅助
+
+新增 `clotho derivative-review`。
+
+该命令读取 `derivative-batch` 的 summary CSV 和 per-stage derivative CSV，生成人工审查清单，用于标记：
+
+- readiness blocked 的 stage；
+- duplicate removal 很多的 stage；
+- dP/dG 正值比例高的 stage；
+- derivative CSV 缺失的 stage。
+
+本阶段仍然不做：
+
+- closure；
+- smoothing；
+- automatic bleedoff detection；
+- resampling；
+- Carter；
+- PKN；
+- volume balance；
+- fracture inversion；
+- Excel/PNG reporting。

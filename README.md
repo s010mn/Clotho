@@ -162,6 +162,18 @@ uv run python -m clotho derivative-batch \
 - 一个 batch summary CSV；
 - blocked stage 不写 derivative CSV，只在 summary 中记录 blocker。
 
+## 导数审查清单
+
+`derivative-review` 可以把 batch summary 和导数 CSV 汇总成一个人工审查清单：
+
+```bash
+uv run python -m clotho derivative-review \
+  --summary /tmp/clotho_batch_output/derivative_batch_summary.csv \
+  --output /tmp/clotho_batch_output/derivative_review.csv
+```
+
+该命令只生成人工审查辅助 CSV，不判断 closure。
+
 ## 数据边界
 
 不要提交：

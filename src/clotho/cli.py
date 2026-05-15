@@ -11,6 +11,7 @@ from clotho import __version__
 from clotho.batch import run_derivative_batch
 from clotho.g_function import nolte_g_time
 from clotho.pressure_derivative import derivative_value_summary, pressure_derivative_against_g_time
+from clotho.review import build_derivative_review_table, write_derivative_review_csv
 from clotho.stage_data import (
     StageInfo,
     add_estimated_bottomhole_pressure,
@@ -136,6 +137,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--summary-name",
         default="derivative_batch_summary.csv",
         help="Summary CSV file name inside output-dir.",
+    )
+
+    derivative_review = subparsers.add_parser(
+        "derivative-review",
+        help="Build a manual review CSV from derivative-batch summary and derivative CSV files.",
+    )
+    derivative_review.add_argument("--summary", required=True, type=Path, help="derivative-batch summary CSV path.")
+    derivative_review.add_argument("--output", required=True, type=Path, help="Review CSV output path.")
+    derivative_review.add_argument(
+        "--derivative-dir",
+        default=None,
+        type=Path,
+        help="Directory containing per-stage derivative CSV files. Defaults to the summary CSV directory.",
+    )
+    derivative_review.add_argument(
+        "--large-duplicate-removal-threshold",
+        default=10,
+        type=int,
+        help="Rows removed by duplicate policy at or above this value are flagged for review.",
+    )
+    derivative_review.add_argument(
+        "--large-abs-dpdg-threshold",
+        default=None,
+        type=float,
+        help="Optional absolute dP/dG threshold for a medium-priority numerical-range flag.",
+    )
+    derivative_review.add_argument(
+        "--positive-derivative-ratio-threshold",
+        default=0.5,
+        type=float,
+        help="Positive dP/dG ratio at or above this value is flagged for review.",
     )
 
     return parser
@@ -447,6 +479,26 @@ def _print_derivative_readiness(state: dict[str, object], *, derivative_was_comp
     print("closure_was_computed=False")
 
 
+# 输入：derivative-review 命令参数。输出：退出码；写人工审查清单，不判断 closure。
+def _run_derivative_review(args: argparse.Namespace) -> int:
+    review = build_derivative_review_table(
+        args.summary,
+        derivative_dir=args.derivative_dir,
+        large_duplicate_removal_threshold=args.large_duplicate_removal_threshold,
+        positive_derivative_ratio_threshold=args.positive_derivative_ratio_threshold,
+        large_abs_dpdg_threshold=args.large_abs_dpdg_threshold,
+    )
+    output_path = write_derivative_review_csv(review, args.output)
+    priority_counts = review["manual_review_priority"].value_counts()
+    print(f"review_stage_count={len(review)}")
+    print(f"review_high_priority_count={int(priority_counts.get('high', 0))}")
+    print(f"review_medium_priority_count={int(priority_counts.get('medium', 0))}")
+    print(f"review_low_priority_count={int(priority_counts.get('low', 0))}")
+    print(f"review_output_path={output_path}")
+    print("closure_was_computed=False")
+    return 0
+
+
 # 输入：derivative-batch 命令参数。输出：退出码；写 CSV summary 和 ready stage 的导数表，不做 closure。
 def _run_derivative_batch(args: argparse.Namespace) -> int:
     result = run_derivative_batch(
@@ -637,6 +689,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "derivative-batch":
         try:
             return _run_derivative_batch(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "derivative-review":
+        try:
+            return _run_derivative_review(args)
         except ValueError as exc:
             parser.error(str(exc))
 
