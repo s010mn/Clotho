@@ -23,6 +23,8 @@ def build_derivative_review_table(
     large_duplicate_removal_threshold: int = 10,
     positive_derivative_ratio_threshold: float = 0.5,
     large_abs_dpdg_threshold: float | None = None,
+    early_transient_window_seconds: float | None = None,
+    early_transient_pressure_range_threshold: float = 1.0,
 ) -> pd.DataFrame:
     """从 batch summary 和导数 CSV 生成人工审查清单。
 
@@ -44,6 +46,14 @@ def build_derivative_review_table(
     if large_abs_dpdg_threshold is not None:
         if not np.isfinite(large_abs_dpdg_threshold) or large_abs_dpdg_threshold < 0.0:
             raise ValueError("large_abs_dpdg_threshold must be finite and >= 0")
+    if early_transient_window_seconds is not None:
+        if not np.isfinite(early_transient_window_seconds) or early_transient_window_seconds <= 0.0:
+            raise ValueError("early_transient_window_seconds must be finite and > 0")
+    if (
+        not np.isfinite(early_transient_pressure_range_threshold)
+        or early_transient_pressure_range_threshold < 0.0
+    ):
+        raise ValueError("early_transient_pressure_range_threshold must be finite and >= 0")
 
     summary = pd.read_csv(summary_path)
     rows: list[dict[str, Any]] = []
@@ -54,6 +64,8 @@ def build_derivative_review_table(
             large_duplicate_removal_threshold=int(large_duplicate_removal_threshold),
             positive_derivative_ratio_threshold=float(positive_derivative_ratio_threshold),
             large_abs_dpdg_threshold=large_abs_dpdg_threshold,
+            early_transient_window_seconds=early_transient_window_seconds,
+            early_transient_pressure_range_threshold=float(early_transient_pressure_range_threshold),
         )
         rows.append(review_row)
     return pd.DataFrame(rows)
@@ -343,11 +355,19 @@ def _review_row(
     large_duplicate_removal_threshold: int,
     positive_derivative_ratio_threshold: float,
     large_abs_dpdg_threshold: float | None,
+    early_transient_window_seconds: float | None,
+    early_transient_pressure_range_threshold: float,
 ) -> dict[str, Any]:
     output_path = _resolve_derivative_path(row.get("pressure_derivative_output_path", ""), derivative_root)
     output_written = _as_bool(row.get("pressure_derivative_output_written", False))
     derivative_csv_exists = bool(output_written and output_path is not None and output_path.exists())
     derivative_csv_rows = _csv_row_count(output_path) if derivative_csv_exists and output_path is not None else 0
+    early_transient_metrics = _early_transient_metrics_for_path(
+        output_path,
+        derivative_csv_exists=derivative_csv_exists,
+        window_seconds=early_transient_window_seconds,
+        pressure_range_threshold_mpa=early_transient_pressure_range_threshold,
+    )
 
     finite_count = _number(row.get("pressure_derivative_dP_dG_finite_count"), default=np.nan)
     positive_count = _number(row.get("pressure_derivative_dP_dG_positive_count"), default=np.nan)
@@ -423,8 +443,238 @@ def _review_row(
         "positive_derivative_ratio_high": positive_derivative_ratio_high,
         "manual_review_priority": priority,
         "manual_review_reasons": reasons,
+        **early_transient_metrics,
         "closure_was_computed": False,
     }
+
+
+def compute_early_transient_metrics(
+    derivative: pd.DataFrame,
+    *,
+    window_seconds: float | None,
+    pressure_range_threshold_mpa: float = 1.0,
+) -> dict[str, Any]:
+    """计算停泵极早期瞬态风险标记。
+
+    这是低频采样下的人工审查辅助：
+    - 不做水锤反演；
+    - 不做频率分析；
+    - 不做 CWT / cepstrum；
+    - 不做 closure；
+    - 不解释导数曲线。
+    """
+    metrics = _default_early_transient_metrics(window_seconds)
+    if window_seconds is None:
+        return metrics
+
+    metrics["early_transient_window_seconds"] = float(window_seconds)
+    if "elapsed_seconds" not in derivative.columns:
+        metrics.update(
+            {
+                "early_transient_status": "missing_elapsed_seconds",
+                "water_hammer_plausibility_note": "insufficient_data_for_assessment",
+            }
+        )
+        return metrics
+    if "pressure_mpa" not in derivative.columns:
+        metrics.update(
+            {
+                "early_transient_status": "missing_pressure_mpa",
+                "water_hammer_plausibility_note": "insufficient_data_for_assessment",
+            }
+        )
+        return metrics
+    if "dP_dG_mpa" not in derivative.columns:
+        metrics.update(
+            {
+                "early_transient_status": "missing_dP_dG_mpa",
+                "water_hammer_plausibility_note": "insufficient_data_for_assessment",
+            }
+        )
+        return metrics
+
+    elapsed = pd.to_numeric(derivative["elapsed_seconds"], errors="coerce")
+    pressure = pd.to_numeric(derivative["pressure_mpa"], errors="coerce")
+    dP_dG = pd.to_numeric(derivative["dP_dG_mpa"], errors="coerce")
+    finite = pd.DataFrame(
+        {
+            "elapsed_seconds": elapsed,
+            "pressure_mpa": pressure,
+            "dP_dG_mpa": dP_dG,
+        }
+    )
+    finite = finite[
+        np.isfinite(finite["elapsed_seconds"].to_numpy(dtype=float))
+        & np.isfinite(finite["pressure_mpa"].to_numpy(dtype=float))
+        & np.isfinite(finite["dP_dG_mpa"].to_numpy(dtype=float))
+    ].copy()
+    if finite.empty:
+        metrics.update(
+            {
+                "early_transient_status": "no_finite_rows",
+                "water_hammer_plausibility_note": "insufficient_data_for_assessment",
+            }
+        )
+        return metrics
+
+    dt = np.diff(finite["elapsed_seconds"].to_numpy(dtype=float))
+    dt_pos = dt[dt > 0.0]
+    median_dt = float(np.median(dt_pos)) if len(dt_pos) else float("nan")
+    metrics["early_transient_median_sampling_interval_seconds"] = median_dt
+    metrics["early_transient_sampling_note"] = _sampling_note(median_dt)
+
+    abs_dP_dG = finite["dP_dG_mpa"].abs()
+    full_abs_index = abs_dP_dG.idxmax()
+    full_abs_elapsed = float(finite.loc[full_abs_index, "elapsed_seconds"])
+    inside_window = bool(0.0 <= full_abs_elapsed <= float(window_seconds))
+    metrics["early_transient_full_abs_dP_dG_elapsed_seconds"] = full_abs_elapsed
+    metrics["early_transient_full_abs_dP_dG_inside_window"] = inside_window
+
+    early = finite.loc[
+        (finite["elapsed_seconds"] >= 0.0) & (finite["elapsed_seconds"] <= float(window_seconds))
+    ].copy()
+    late = finite.loc[finite["elapsed_seconds"] > float(window_seconds)].copy()
+    metrics["early_transient_rows"] = int(len(early))
+    metrics["late_after_early_transient_rows"] = int(len(late))
+    if early.empty:
+        metrics.update(
+            {
+                "early_transient_status": "no_rows_in_early_window",
+                "water_hammer_plausibility_note": "insufficient_data_for_assessment",
+            }
+        )
+        return metrics
+
+    early_abs_max = float(early["dP_dG_mpa"].abs().max())
+    late_abs_max = float(late["dP_dG_mpa"].abs().max()) if len(late) else float("nan")
+    pressure_range = float(early["pressure_mpa"].max() - early["pressure_mpa"].min())
+    local_extrema = _local_extrema_count(early["pressure_mpa"])
+    pressure_step_sign_changes = _sign_changes(early["pressure_mpa"].diff())
+    dP_dG_sign_changes = _sign_changes(early["dP_dG_mpa"])
+
+    labels: list[str] = []
+    if inside_window:
+        labels.append("full_abs_max_inside_early_window")
+    if local_extrema >= 1:
+        labels.append("early_peak_valley_present")
+    if pressure_step_sign_changes >= 1:
+        labels.append("early_pressure_step_sign_reversal")
+    if dP_dG_sign_changes >= 1:
+        labels.append("early_dP_dG_sign_reversal")
+    if pressure_range >= pressure_range_threshold_mpa:
+        labels.append("early_pressure_range_ge_threshold")
+    if _sampling_note(median_dt) == "one_second_or_coarser_sampling_limited_for_water_hammer":
+        labels.append("one_second_or_coarser_sampling_limited_for_water_hammer")
+
+    risk_evidence = bool(
+        pressure_range >= pressure_range_threshold_mpa
+        or local_extrema >= 1
+        or pressure_step_sign_changes >= 1
+        or dP_dG_sign_changes >= 1
+    )
+    risk = bool(inside_window and risk_evidence)
+    if risk and np.isfinite(median_dt) and median_dt >= 1.0:
+        note = "plausible_low_frequency_only"
+    elif risk:
+        note = "plausible_but_requires_specialized_high_frequency_review"
+    else:
+        note = "not_indicated_by_simple_low_frequency_rules"
+
+    metrics.update(
+        {
+            "early_transient_status": "ok",
+            "early_transient_early_abs_dP_dG_max": early_abs_max,
+            "early_transient_late_abs_dP_dG_max": late_abs_max,
+            "early_transient_pressure_range_mpa": pressure_range,
+            "early_transient_pressure_local_extrema_count": int(local_extrema),
+            "early_transient_pressure_step_sign_changes": int(pressure_step_sign_changes),
+            "early_transient_dP_dG_sign_changes": int(dP_dG_sign_changes),
+            "early_transient_risk": risk,
+            "early_transient_labels": ";".join(labels),
+            "water_hammer_plausibility_note": note,
+        }
+    )
+    return metrics
+
+
+def _early_transient_metrics_for_path(
+    path: Path | None,
+    *,
+    derivative_csv_exists: bool,
+    window_seconds: float | None,
+    pressure_range_threshold_mpa: float,
+) -> dict[str, Any]:
+    if window_seconds is None:
+        return _default_early_transient_metrics(window_seconds)
+    if not derivative_csv_exists or path is None:
+        metrics = _default_early_transient_metrics(window_seconds)
+        metrics.update(
+            {
+                "early_transient_status": "no_finite_rows",
+                "water_hammer_plausibility_note": "insufficient_data_for_assessment",
+            }
+        )
+        return metrics
+    return compute_early_transient_metrics(
+        pd.read_csv(path),
+        window_seconds=window_seconds,
+        pressure_range_threshold_mpa=pressure_range_threshold_mpa,
+    )
+
+
+def _default_early_transient_metrics(window_seconds: float | None) -> dict[str, Any]:
+    requested = window_seconds is not None
+    return {
+        "early_transient_window_seconds": float(window_seconds) if requested else np.nan,
+        "early_transient_status": "not_requested" if not requested else "no_finite_rows",
+        "early_transient_rows": 0,
+        "late_after_early_transient_rows": 0,
+        "early_transient_full_abs_dP_dG_elapsed_seconds": np.nan,
+        "early_transient_full_abs_dP_dG_inside_window": False,
+        "early_transient_early_abs_dP_dG_max": np.nan,
+        "early_transient_late_abs_dP_dG_max": np.nan,
+        "early_transient_pressure_range_mpa": np.nan,
+        "early_transient_pressure_local_extrema_count": 0,
+        "early_transient_pressure_step_sign_changes": 0,
+        "early_transient_dP_dG_sign_changes": 0,
+        "early_transient_median_sampling_interval_seconds": np.nan,
+        "early_transient_sampling_note": "",
+        "early_transient_risk": False,
+        "early_transient_labels": "",
+        "water_hammer_plausibility_note": "not_requested" if not requested else "insufficient_data_for_assessment",
+    }
+
+
+def _sampling_note(median_dt: float) -> str:
+    if not np.isfinite(median_dt):
+        return "unknown"
+    if median_dt >= 1.0:
+        return "one_second_or_coarser_sampling_limited_for_water_hammer"
+    return "subsecond_sampling_still_requires_specialized_water_hammer_analysis"
+
+
+def _sign_changes(values: pd.Series) -> int:
+    vals = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
+    if len(vals) < 2:
+        return 0
+    signs = np.sign(vals)
+    signs = signs[signs != 0]
+    if len(signs) < 2:
+        return 0
+    return int(np.sum(signs[1:] * signs[:-1] < 0))
+
+
+def _local_extrema_count(values: pd.Series) -> int:
+    vals = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
+    if len(vals) < 3:
+        return 0
+    count = 0
+    for index in range(1, len(vals) - 1):
+        if (vals[index] > vals[index - 1] and vals[index] > vals[index + 1]) or (
+            vals[index] < vals[index - 1] and vals[index] < vals[index + 1]
+        ):
+            count += 1
+    return int(count)
 
 
 def _resolve_derivative_path(value: Any, derivative_root: Path) -> Path | None:

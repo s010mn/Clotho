@@ -228,6 +228,238 @@ def test_derivative_review_negative_print_topn_errors(tmp_path, capsys) -> None:
     assert "print_top_n" in captured.err
 
 
+
+def _write_single_stage_summary(tmp_path, *, path_name="stage_01_derivative.csv", stage=1, rows_removed=0):
+    summary = tmp_path / f"single_stage_{stage}_summary.csv"
+    summary.write_text(
+        "stage,derivative_readiness_ready,derivative_readiness_blockers,derivative_was_computed,"
+        "closure_was_computed,pressure_derivative_output_written,pressure_derivative_output_path,"
+        "falloff_window_rows_after_duplicate_policy,falloff_window_rows_removed_by_duplicate_policy,"
+        "pressure_derivative_dP_dG_finite_count,pressure_derivative_dP_dG_positive_count,"
+        "pressure_derivative_dP_dG_negative_count,pressure_derivative_dP_dG_zero_count,"
+        "pressure_derivative_dP_dG_min,pressure_derivative_dP_dG_median,pressure_derivative_dP_dG_max,"
+        "pressure_derivative_G_dP_dG_min,pressure_derivative_G_dP_dG_median,"
+        "pressure_derivative_G_dP_dG_max,pressure_derivative_pressure_step_positive_count,"
+        "pressure_derivative_pressure_step_negative_count,pressure_derivative_pressure_step_zero_count\n"
+        f"{stage},True,none,True,False,True,{path_name},100,{rows_removed},100,10,90,0,-12000,-1,8000,-3,-1,1,10,90,0\n",
+        encoding="utf-8",
+    )
+    return summary
+
+
+def _write_derivative_text(path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+
+
+def _run_review_with_early_window(tmp_path, derivative_text: str, extra_args=None):
+    summary = _write_single_stage_summary(tmp_path)
+    _write_derivative_text(tmp_path / "stage_01_derivative.csv", derivative_text)
+    output = tmp_path / "review.csv"
+    args = [
+        "derivative-review",
+        "--summary",
+        str(summary),
+        "--output",
+        str(output),
+        "--early-transient-window-seconds",
+        "15",
+    ]
+    if extra_args:
+        args.extend(extra_args)
+    exit_code = main(args)
+    return exit_code, pd.read_csv(output).iloc[0]
+
+
+def test_derivative_review_default_early_transient_not_requested(tmp_path) -> None:
+    summary = _write_review_inputs(tmp_path)
+    output = tmp_path / "review.csv"
+
+    exit_code = main(["derivative-review", "--summary", str(summary), "--output", str(output)])
+
+    review = pd.read_csv(output)
+    stage1 = review.loc[review["stage"] == 1].iloc[0]
+    assert exit_code == 0
+    assert stage1["early_transient_status"] == "not_requested"
+    assert bool(stage1["early_transient_risk"]) is False
+    assert stage1["water_hammer_plausibility_note"] == "not_requested"
+    assert stage1["manual_review_priority"] == "low"
+    assert bool(stage1["closure_was_computed"]) is False
+
+
+def test_derivative_review_early_transient_flags_low_frequency_risk(tmp_path) -> None:
+    derivative_text = (
+        "elapsed_seconds,pressure_mpa,dP_dG_mpa,G_dP_dG_mpa\n"
+        "0,100,1000,0\n"
+        "1,95,-12000,-10\n"
+        "2,99,8000,20\n"
+        "3,94,-7000,-30\n"
+        "4,98,5000,40\n"
+        "20,93,100,50\n"
+        "30,92,50,60\n"
+    )
+
+    exit_code, row = _run_review_with_early_window(
+        tmp_path,
+        derivative_text,
+        ["--early-transient-pressure-range-threshold", "1.0"],
+    )
+
+    assert exit_code == 0
+    assert row["early_transient_status"] == "ok"
+    assert bool(row["early_transient_full_abs_dP_dG_inside_window"]) is True
+    assert row["early_transient_early_abs_dP_dG_max"] == 12000
+    assert row["early_transient_late_abs_dP_dG_max"] == 100
+    assert row["early_transient_pressure_range_mpa"] >= 1.0
+    assert row["early_transient_pressure_local_extrema_count"] >= 1
+    assert row["early_transient_pressure_step_sign_changes"] >= 1
+    assert row["early_transient_dP_dG_sign_changes"] >= 1
+    assert bool(row["early_transient_risk"]) is True
+    assert row["water_hammer_plausibility_note"] == "plausible_low_frequency_only"
+    assert bool(row["closure_was_computed"]) is False
+
+
+def test_derivative_review_early_transient_full_abs_outside_window_no_risk(tmp_path) -> None:
+    derivative_text = (
+        "elapsed_seconds,pressure_mpa,dP_dG_mpa,G_dP_dG_mpa\n"
+        "0,100,100,0\n"
+        "1,99,-100,0\n"
+        "2,100,120,0\n"
+        "20,95,-9000,0\n"
+        "30,94,-10000,0\n"
+    )
+
+    exit_code, row = _run_review_with_early_window(tmp_path, derivative_text)
+
+    assert exit_code == 0
+    assert row["early_transient_status"] == "ok"
+    assert bool(row["early_transient_full_abs_dP_dG_inside_window"]) is False
+    assert bool(row["early_transient_risk"]) is False
+    assert row["water_hammer_plausibility_note"] == "not_indicated_by_simple_low_frequency_rules"
+
+
+def test_derivative_review_early_transient_missing_elapsed_seconds(tmp_path) -> None:
+    exit_code, row = _run_review_with_early_window(
+        tmp_path,
+        "pressure_mpa,dP_dG_mpa,G_dP_dG_mpa\n100,1,0\n",
+    )
+
+    assert exit_code == 0
+    assert row["early_transient_status"] == "missing_elapsed_seconds"
+    assert bool(row["early_transient_risk"]) is False
+    assert row["water_hammer_plausibility_note"] == "insufficient_data_for_assessment"
+    assert row["manual_review_priority"] == "low"
+    assert bool(row["closure_was_computed"]) is False
+
+
+def test_derivative_review_early_transient_missing_pressure_mpa(tmp_path) -> None:
+    exit_code, row = _run_review_with_early_window(
+        tmp_path,
+        "elapsed_seconds,dP_dG_mpa,G_dP_dG_mpa\n0,1,0\n",
+    )
+
+    assert exit_code == 0
+    assert row["early_transient_status"] == "missing_pressure_mpa"
+    assert bool(row["early_transient_risk"]) is False
+    assert row["water_hammer_plausibility_note"] == "insufficient_data_for_assessment"
+
+
+def test_derivative_review_early_transient_missing_dpdg_mpa(tmp_path) -> None:
+    exit_code, row = _run_review_with_early_window(
+        tmp_path,
+        "elapsed_seconds,pressure_mpa,G_dP_dG_mpa\n0,100,0\n",
+    )
+
+    assert exit_code == 0
+    assert row["early_transient_status"] == "missing_dP_dG_mpa"
+    assert bool(row["early_transient_risk"]) is False
+    assert row["water_hammer_plausibility_note"] == "insufficient_data_for_assessment"
+
+
+def test_derivative_review_early_transient_no_finite_rows(tmp_path) -> None:
+    exit_code, row = _run_review_with_early_window(
+        tmp_path,
+        "elapsed_seconds,pressure_mpa,dP_dG_mpa,G_dP_dG_mpa\nabc,def,ghi,0\n,, ,0\n",
+    )
+
+    assert exit_code == 0
+    assert row["early_transient_status"] == "no_finite_rows"
+    assert bool(row["early_transient_risk"]) is False
+    assert row["water_hammer_plausibility_note"] == "insufficient_data_for_assessment"
+
+
+def test_derivative_review_early_transient_no_rows_in_early_window(tmp_path) -> None:
+    exit_code, row = _run_review_with_early_window(
+        tmp_path,
+        "elapsed_seconds,pressure_mpa,dP_dG_mpa,G_dP_dG_mpa\n20,100,1000,0\n30,99,-900,0\n",
+    )
+
+    assert exit_code == 0
+    assert row["early_transient_status"] == "no_rows_in_early_window"
+    assert bool(row["early_transient_risk"]) is False
+    assert row["water_hammer_plausibility_note"] == "insufficient_data_for_assessment"
+
+
+def test_derivative_review_invalid_early_transient_window_errors(tmp_path, capsys) -> None:
+    summary = _write_review_inputs(tmp_path)
+    output = tmp_path / "review.csv"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "derivative-review",
+                "--summary",
+                str(summary),
+                "--output",
+                str(output),
+                "--early-transient-window-seconds",
+                "-1",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "early_transient_window_seconds" in captured.err
+
+
+def test_derivative_review_invalid_early_transient_threshold_errors(tmp_path, capsys) -> None:
+    summary = _write_review_inputs(tmp_path)
+    output = tmp_path / "review.csv"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "derivative-review",
+                "--summary",
+                str(summary),
+                "--output",
+                str(output),
+                "--early-transient-pressure-range-threshold",
+                "-1",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "early_transient_pressure_range_threshold" in captured.err
+
+
+def test_derivative_review_early_transient_risk_does_not_change_priority(tmp_path) -> None:
+    derivative_text = (
+        "elapsed_seconds,pressure_mpa,dP_dG_mpa,G_dP_dG_mpa\n"
+        "0,100,1000,0\n"
+        "1,95,-12000,-10\n"
+        "2,99,8000,20\n"
+        "3,94,-7000,-30\n"
+        "20,93,100,50\n"
+    )
+
+    exit_code, row = _run_review_with_early_window(tmp_path, derivative_text)
+
+    assert exit_code == 0
+    assert bool(row["early_transient_risk"]) is True
+    assert row["manual_review_priority"] == "low"
+
+
 def _write_context_review(tmp_path, *, path_name="stage_07_derivative.csv", exists=True):
     review = tmp_path / "context_review.csv"
     review.write_text(

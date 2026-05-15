@@ -2505,3 +2505,97 @@ defer unless later needed: other medium duplicate-handling stages
 ```
 
 本阶段仍然不是 closure，没有 closure diagnostics、closure pressure picking、ISIP / closure 自动解释、smoothing、resampling、automatic active-bleedoff detection、Carter、PKN、volume balance、fracture inversion、Excel/PNG reporting 或图件输出。
+
+## Phase 4N0：water-hammer / early-time transient plausibility audit
+
+仓库外本地审计输出位于：
+
+```text
+/tmp/gfunction-ref-audit-phase4n0/water_hammer_plausibility_key_stages.csv
+```
+
+审计结论：
+
+- key stages 的 median sampling interval 均为 1.0 s；
+- 这只能支持 low-frequency early-time transient / water-hammer plausibility audit；
+- 不能支持严格 water-hammer frequency / cepstrum / CWT inversion；
+- stage 7 的 full abs `dP/dG` max 位于停泵后 6.0 s；
+- stage 8 的 full abs `dP/dG` max 位于停泵后 4.0 s；
+- stage 10 是 no-duplicate reference，但也在停泵后 3.0 s 出现 full abs `dP/dG` max；
+- stage 5 / 21 同时具有 duplicate-removal high-risk 和 early-transient risk；
+- 这些现象支持：very early transient dominates abs-max flag; water hammer plausible; not closure。
+
+本阶段仍然不是 closure，没有 water-hammer inversion、frequency analysis、CWT、cepstrum、smoothing、resampling、closure diagnostics 或 closure pressure picking。
+
+## Phase 4N1：derivative-review early transient risk flags
+
+新增 `clotho derivative-review` 可选人工审查标记：
+
+```text
+--early-transient-window-seconds FLOAT
+--early-transient-pressure-range-threshold FLOAT
+```
+
+新增 review CSV 字段：
+
+```text
+early_transient_window_seconds
+early_transient_status
+early_transient_rows
+late_after_early_transient_rows
+early_transient_full_abs_dP_dG_elapsed_seconds
+early_transient_full_abs_dP_dG_inside_window
+early_transient_early_abs_dP_dG_max
+early_transient_late_abs_dP_dG_max
+early_transient_pressure_range_mpa
+early_transient_pressure_local_extrema_count
+early_transient_pressure_step_sign_changes
+early_transient_dP_dG_sign_changes
+early_transient_median_sampling_interval_seconds
+early_transient_sampling_note
+early_transient_risk
+early_transient_labels
+water_hammer_plausibility_note
+```
+
+边界：
+
+- 该功能只做低频采样下的 early-time transient / water-hammer plausibility 人工审查风险标记；
+- 不改变 derivative CSV；
+- 不改变 batch summary；
+- 不重新计算 `dP/dG` 或 `G dP/dG`；
+- 不改变 `manual_review_priority` rules；
+- 不做 water-hammer inversion；
+- 不做 CWT / cepstrum；
+- 不做 smoothing / resampling；
+- 不做 closure。
+
+Reference smoke 成功，输出位于：
+
+```text
+/tmp/gfunction-ref-audit-phase4n1/derivative_review_early15.csv
+/tmp/gfunction-ref-audit-phase4n1/early_transient_key_stages.csv
+```
+
+Smoke 摘要：
+
+```text
+review rows: 28
+priority counts: medium=15, low=11, high=2
+early_transient_status: ok=28
+early_transient_risk: True=20, False=8
+water_hammer_plausibility_note: plausible_low_frequency_only=20, not_indicated_by_simple_low_frequency_rules=8
+```
+
+Key stages：
+
+- stage 5：high；`early_transient_risk=True`；full abs `dP/dG` at 3.0 s；`plausible_low_frequency_only`；
+- stage 21：high；`early_transient_risk=True`；full abs `dP/dG` at 0.0 s；`plausible_low_frequency_only`；
+- stage 7：medium；`early_transient_risk=True`；full abs `dP/dG` at 6.0 s；`plausible_low_frequency_only`；
+- stage 8：medium；`early_transient_risk=True`；full abs `dP/dG` at 4.0 s；`plausible_low_frequency_only`；
+- stage 10：low no-duplicate reference；`early_transient_risk=True`；full abs `dP/dG` at 3.0 s；`plausible_low_frequency_only`；
+- stage 1：medium small-duplicate reference；`early_transient_risk=True`；full abs `dP/dG` at 0.0 s；
+- stage 3：low positive-ratio reference；`early_transient_risk=False` because full abs max is at 17.0 s, outside 15 s window；
+- stage 29：medium boundary / small-duplicate example；`early_transient_risk=False` because full abs max is at 1087.0 s, outside 15 s window。
+
+这仍然不是 closure，也不是 water-hammer diagnosis。

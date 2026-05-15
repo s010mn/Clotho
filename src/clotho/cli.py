@@ -176,6 +176,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Positive dP/dG ratio at or above this value is flagged for review.",
     )
     derivative_review.add_argument(
+        "--early-transient-window-seconds",
+        default=None,
+        type=float,
+        help=(
+            "Optional early-time transient / water-hammer plausibility audit window in seconds; "
+            "manual review flag only, no inversion and no closure."
+        ),
+    )
+    derivative_review.add_argument(
+        "--early-transient-pressure-range-threshold",
+        default=1.0,
+        type=float,
+        help="Early-window pressure range threshold in MPa for the optional transient risk flag.",
+    )
+    derivative_review.add_argument(
         "--print-top-n",
         default=0,
         type=int,
@@ -574,12 +589,23 @@ def _run_derivative_context(args: argparse.Namespace) -> int:
 def _run_derivative_review(args: argparse.Namespace) -> int:
     if args.print_top_n < 0:
         raise ValueError("print_top_n 必须是 >= 0 的整数")
+    if args.early_transient_window_seconds is not None:
+        early_window = float(args.early_transient_window_seconds)
+        if not np.isfinite(early_window) or early_window <= 0.0:
+            raise ValueError("early_transient_window_seconds must be finite and > 0")
+    if (
+        not np.isfinite(float(args.early_transient_pressure_range_threshold))
+        or float(args.early_transient_pressure_range_threshold) < 0.0
+    ):
+        raise ValueError("early_transient_pressure_range_threshold must be finite and >= 0")
     review = build_derivative_review_table(
         args.summary,
         derivative_dir=args.derivative_dir,
         large_duplicate_removal_threshold=args.large_duplicate_removal_threshold,
         positive_derivative_ratio_threshold=args.positive_derivative_ratio_threshold,
         large_abs_dpdg_threshold=args.large_abs_dpdg_threshold,
+        early_transient_window_seconds=args.early_transient_window_seconds,
+        early_transient_pressure_range_threshold=args.early_transient_pressure_range_threshold,
     )
     output_path = write_derivative_review_csv(review, args.output)
     priority_counts = review["manual_review_priority"].value_counts()
@@ -588,6 +614,14 @@ def _run_derivative_review(args: argparse.Namespace) -> int:
     print(f"review_medium_priority_count={int(priority_counts.get('medium', 0))}")
     print(f"review_low_priority_count={int(priority_counts.get('low', 0))}")
     print(f"review_output_path={output_path}")
+    early_enabled = args.early_transient_window_seconds is not None
+    print(f"early_transient_audit_enabled={_bool_text(early_enabled)}")
+    if early_enabled:
+        risk_count = int(review["early_transient_risk"].astype(str).str.lower().isin(["true", "1", "yes", "y"]).sum())
+        low_freq_count = int((review["water_hammer_plausibility_note"] == "plausible_low_frequency_only").sum())
+        print(f"early_transient_window_seconds={_format_optional_float(float(args.early_transient_window_seconds))}")
+        print(f"early_transient_risk_count={risk_count}")
+        print(f"water_hammer_plausibility_low_frequency_count={low_freq_count}")
     for line in format_top_review_rows(
         review,
         column="dP_dG_abs_max",

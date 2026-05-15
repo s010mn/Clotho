@@ -185,6 +185,20 @@ uv run python -m clotho derivative-review \
 
 `--print-top-n` 只用于人工审查排序，不做 closure，不自动解释导数曲线。
 
+也可以给 `derivative-review` 增加低频采样下的 early-time transient / water-hammer plausibility 标记：
+
+```bash
+uv run python -m clotho derivative-review \
+  --summary /tmp/gfunction-ref-audit-phase4k/keep_last/derivative_batch_summary_keep_last.csv \
+  --derivative-dir /tmp/gfunction-ref-audit-phase4k/keep_last \
+  --output /tmp/gfunction-ref-audit-phase4n1/derivative_review_early15.csv \
+  --large-abs-dpdg-threshold 10000 \
+  --early-transient-window-seconds 15 \
+  --print-top-n 10
+```
+
+`--early-transient-window-seconds` 只做低频采样下的 early-time transient / water-hammer plausibility 人工审查标记。它不做水锤反演、不做频率分析、不做 CWT、不做 cepstrum、不做 smoothing、不做 resampling、不做 closure，也不改变 priority rules。
+
 该命令只生成人工审查辅助 CSV，不判断 closure。
 
 `derivative-context` 可以把 dP/dG 极值行及其邻近行导出为 CSV，供人工查看极值发生位置：
