@@ -30,6 +30,32 @@ def _write_review_inputs(tmp_path):
     return summary
 
 
+
+def _write_topn_review_inputs(tmp_path):
+    summary = tmp_path / "topn_summary.csv"
+    header = (
+        "stage,derivative_readiness_ready,derivative_readiness_blockers,derivative_was_computed,"
+        "closure_was_computed,pressure_derivative_output_written,pressure_derivative_output_path,"
+        "falloff_window_rows_after_duplicate_policy,falloff_window_rows_removed_by_duplicate_policy,"
+        "pressure_derivative_dP_dG_finite_count,pressure_derivative_dP_dG_positive_count,"
+        "pressure_derivative_dP_dG_negative_count,pressure_derivative_dP_dG_zero_count,"
+        "pressure_derivative_dP_dG_min,pressure_derivative_dP_dG_median,pressure_derivative_dP_dG_max,"
+        "pressure_derivative_G_dP_dG_min,pressure_derivative_G_dP_dG_median,"
+        "pressure_derivative_G_dP_dG_max,pressure_derivative_pressure_step_positive_count,"
+        "pressure_derivative_pressure_step_negative_count,pressure_derivative_pressure_step_zero_count\n"
+    )
+    rows = [
+        "8,True,none,True,False,True,stage_08_derivative.csv,100,0,100,20,80,0,-13693,0,10,-2,0,2,20,80,0\n",
+        "7,True,none,True,False,True,stage_07_derivative.csv,100,0,100,25,75,0,-12998,0,10,-2,0,2,25,75,0\n",
+        "3,True,none,True,False,True,stage_03_derivative.csv,100,0,100,80,20,0,-10,0,5,-2,0,2,80,20,0\n",
+    ]
+    summary.write_text(header + "".join(rows), encoding="utf-8")
+    derivative_csv = "elapsed_seconds,dP_dG_mpa,G_dP_dG_mpa\n0,1,0\n1,2,2\n"
+    for stage in [3, 7, 8]:
+        (tmp_path / f"stage_{stage:02d}_derivative.csv").write_text(derivative_csv, encoding="utf-8")
+    return summary
+
+
 def test_derivative_review_table_flags_high_priority_stages(tmp_path) -> None:
     summary = _write_review_inputs(tmp_path)
 
@@ -111,3 +137,92 @@ def test_derivative_review_missing_derivative_dir_errors(tmp_path, capsys) -> No
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "derivative directory" in captured.err
+
+
+def test_derivative_review_default_does_not_print_topn(tmp_path, capsys) -> None:
+    summary = _write_topn_review_inputs(tmp_path)
+    output = tmp_path / "review.csv"
+
+    exit_code = main(["derivative-review", "--summary", str(summary), "--output", str(output)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "top_dP_dG_abs_max" not in captured.out
+    assert "top_dP_dG_positive_ratio" not in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_derivative_review_print_topn_orders_abs_max_and_positive_ratio(tmp_path, capsys) -> None:
+    summary = _write_topn_review_inputs(tmp_path)
+    output = tmp_path / "review.csv"
+
+    exit_code = main(
+        [
+            "derivative-review",
+            "--summary",
+            str(summary),
+            "--output",
+            str(output),
+            "--print-top-n",
+            "2",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "top_dP_dG_abs_max:" in captured.out
+    assert "top_dP_dG_positive_ratio:" in captured.out
+    assert "rank=1" in captured.out
+    assert "rank=2" in captured.out
+    abs_block = captured.out.split("top_dP_dG_abs_max:", 1)[1].split("top_dP_dG_positive_ratio:", 1)[0]
+    assert abs_block.index("rank=1 stage=8") < abs_block.index("rank=2 stage=7")
+    ratio_block = captured.out.split("top_dP_dG_positive_ratio:", 1)[1]
+    assert "rank=1 stage=3" in ratio_block
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_derivative_review_print_topn_preserves_threshold_priority(tmp_path, capsys) -> None:
+    summary = _write_topn_review_inputs(tmp_path)
+    output = tmp_path / "review.csv"
+
+    exit_code = main(
+        [
+            "derivative-review",
+            "--summary",
+            str(summary),
+            "--output",
+            str(output),
+            "--large-abs-dpdg-threshold",
+            "10000",
+            "--print-top-n",
+            "2",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    abs_block = captured.out.split("top_dP_dG_abs_max:", 1)[1].split("top_dP_dG_positive_ratio:", 1)[0]
+    assert "rank=1 stage=8 priority=medium" in abs_block
+    assert "rank=2 stage=7 priority=medium" in abs_block
+
+
+def test_derivative_review_negative_print_topn_errors(tmp_path, capsys) -> None:
+    summary = _write_topn_review_inputs(tmp_path)
+    output = tmp_path / "review.csv"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "derivative-review",
+                "--summary",
+                str(summary),
+                "--output",
+                str(output),
+                "--print-top-n",
+                "-1",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "print_top_n" in captured.err

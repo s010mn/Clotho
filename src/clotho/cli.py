@@ -11,7 +11,7 @@ from clotho import __version__
 from clotho.batch import run_derivative_batch
 from clotho.g_function import nolte_g_time
 from clotho.pressure_derivative import derivative_value_summary, pressure_derivative_against_g_time
-from clotho.review import build_derivative_review_table, write_derivative_review_csv
+from clotho.review import build_derivative_review_table, format_top_review_rows, write_derivative_review_csv
 from clotho.stage_data import (
     StageInfo,
     add_estimated_bottomhole_pressure,
@@ -168,6 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.5,
         type=float,
         help="Positive dP/dG ratio at or above this value is flagged for review.",
+    )
+    derivative_review.add_argument(
+        "--print-top-n",
+        default=0,
+        type=int,
+        help="Print top-N manual triage rows by dP/dG absolute max and positive ratio; does not compute closure.",
     )
 
     return parser
@@ -481,6 +487,8 @@ def _print_derivative_readiness(state: dict[str, object], *, derivative_was_comp
 
 # 输入：derivative-review 命令参数。输出：退出码；写人工审查清单，不判断 closure。
 def _run_derivative_review(args: argparse.Namespace) -> int:
+    if args.print_top_n < 0:
+        raise ValueError("print_top_n 必须是 >= 0 的整数")
     review = build_derivative_review_table(
         args.summary,
         derivative_dir=args.derivative_dir,
@@ -495,6 +503,20 @@ def _run_derivative_review(args: argparse.Namespace) -> int:
     print(f"review_medium_priority_count={int(priority_counts.get('medium', 0))}")
     print(f"review_low_priority_count={int(priority_counts.get('low', 0))}")
     print(f"review_output_path={output_path}")
+    for line in format_top_review_rows(
+        review,
+        column="dP_dG_abs_max",
+        top_n=args.print_top_n,
+        label="top_dP_dG_abs_max",
+    ):
+        print(line)
+    for line in format_top_review_rows(
+        review,
+        column="dP_dG_positive_ratio",
+        top_n=args.print_top_n,
+        label="top_dP_dG_positive_ratio",
+    ):
+        print(line)
     print("closure_was_computed=False")
     return 0
 

@@ -172,6 +172,19 @@ uv run python -m clotho derivative-review \
   --output /tmp/clotho_batch_output/derivative_review.csv
 ```
 
+也可以只在 stdout 打印人工分诊 top-N：
+
+```bash
+uv run python -m clotho derivative-review \
+  --summary /tmp/gfunction-ref-audit-phase4f/keep_last/derivative_batch_summary_keep_last.csv \
+  --derivative-dir /tmp/gfunction-ref-audit-phase4f/keep_last \
+  --output /tmp/gfunction-ref-audit-phase4i/derivative_review_abs10000.csv \
+  --large-abs-dpdg-threshold 10000 \
+  --print-top-n 10
+```
+
+`--print-top-n` 只用于人工审查排序，不做 closure，不自动解释导数曲线。
+
 该命令只生成人工审查辅助 CSV，不判断 closure。
 
 ## 数据边界

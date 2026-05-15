@@ -2195,3 +2195,42 @@ Phase 4I：导数审查清单增强或人工审查计划
 3. 明确哪些 stage 需要人工画图，而不是自动 closure；
 4. 如果要画图，必须先作为仓库外 notebook / 手工输出，不要直接做 Excel/PNG reporting；
 5. 在 closure-candidate audit 前，先确认 duplicate policy 对导数曲线的影响。
+
+## Phase 4I：导数审查阈值敏感性审计
+
+本阶段只做本地审计，未修改源码、测试或 CLI。
+
+使用现有 `clotho derivative-review --large-abs-dpdg-threshold` 对 keep-last batch summary 做阈值敏感性检查：
+
+- `abs5000`：high=2，medium=15，low=11；
+- `abs10000`：high=2，medium=15，low=11；
+- `abs15000`：high=2，medium=13，low=13。
+
+关键结论：
+
+- stage 7 / stage 8 在 `abs5000` 和 `abs10000` 下被提升为 medium；
+- stage 7 / stage 8 在 `abs15000` 下仍为 low；
+- 原因是 stage 8 的 `dP_dG_abs_max=13693.500874`，stage 7 的 `dP_dG_abs_max=12998.047493`；
+- stage 5 / stage 21 始终为 high；
+- 没有新的 high-priority stage；
+- large absolute dP/dG 当前只是 medium flag，不会单独升 high；
+- 这仍然不是 closure。
+
+## Phase 4J：derivative-review top-N 人工分诊输出
+
+新增 `clotho derivative-review --print-top-n`。
+
+该参数只在 stdout 输出人工审查 top-N 排名：
+
+- `top_dP_dG_abs_max`；
+- `top_dP_dG_positive_ratio`。
+
+本阶段约束：
+
+- 不改变默认 priority；
+- 不改变 review CSV 字段；
+- 不做 closure；
+- 不自动解释导数曲线；
+- 不做 smoothing、resampling、automatic bleedoff detection、Carter、PKN、volume balance、fracture inversion 或 Excel/PNG reporting。
+
+用途：帮助人工发现 stage 7 / stage 8 这类 high absolute dP/dG、但默认 priority 可能仍为 low 的对象。

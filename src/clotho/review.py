@@ -70,6 +70,48 @@ def write_derivative_review_csv(
     return output_path
 
 
+def format_top_review_rows(
+    review_df: pd.DataFrame,
+    *,
+    column: str,
+    top_n: int,
+    label: str,
+) -> list[str]:
+    """格式化人工审查排序；这是人工分诊辅助，不是物理解释或 closure。"""
+    if top_n <= 0:
+        return []
+    lines = [f"{label}:"]
+    if column not in review_df.columns:
+        lines.append(f"{label}_no_finite_values=True reason=missing_column column={column}")
+        return lines
+
+    ranked = review_df.copy()
+    ranked[column] = pd.to_numeric(ranked[column], errors="coerce")
+    ranked = ranked[np.isfinite(ranked[column].to_numpy(dtype=float))]
+    if ranked.empty:
+        lines.append(f"{label}_no_finite_values=True column={column}")
+        return lines
+
+    ranked = ranked.sort_values(column, ascending=False).head(int(top_n))
+    for rank, (_, row) in enumerate(ranked.iterrows(), start=1):
+        lines.append(
+            " ".join(
+                [
+                    f"rank={rank}",
+                    f"stage={_format_rank_stage(row.get('stage'))}",
+                    f"priority={_text(row.get('manual_review_priority', ''))}",
+                    f"reasons={_format_rank_reasons(row.get('manual_review_reasons', ''))}",
+                    f"dP_dG_abs_max={_format_rank_float(row.get('dP_dG_abs_max'))}",
+                    f"dP_dG_positive_ratio={_format_rank_float(row.get('dP_dG_positive_ratio'))}",
+                    "rows_removed="
+                    + _format_rank_int(row.get("falloff_window_rows_removed_by_duplicate_policy")),
+                    f"csv_rows={_format_rank_int(row.get('derivative_csv_rows'))}",
+                ]
+            )
+        )
+    return lines
+
+
 def _review_row(
     row: pd.Series,
     *,
@@ -260,6 +302,34 @@ def _abs_max(min_value: float, max_value: float) -> float:
     if not values:
         return float("nan")
     return float(max(values))
+
+
+def _format_rank_stage(value: Any) -> str:
+    number = _number(value, default=np.nan)
+    if not np.isfinite(number):
+        return "nan"
+    return str(int(number))
+
+
+def _format_rank_int(value: Any) -> str:
+    number = _number(value, default=np.nan)
+    if not np.isfinite(number):
+        return "nan"
+    return str(int(number))
+
+
+def _format_rank_float(value: Any) -> str:
+    number = _number(value, default=np.nan)
+    if not np.isfinite(number):
+        return "nan"
+    return f"{float(number):.6f}"
+
+
+def _format_rank_reasons(value: Any) -> str:
+    text = _text(value).strip()
+    if not text:
+        return "none"
+    return text.replace(" ", "_").replace(";_", ";")
 
 
 def _text(value: Any) -> str:
