@@ -493,7 +493,7 @@ def legacy_mvp_pkn_volume_balance_estimate(
     }
 
 
-PHYSICAL_PKN_IF = 0.3875
+PHYSICAL_PKN_IF = 0.722464726919
 PHYSICAL_PKN_HW_M = 50.0
 
 
@@ -724,7 +724,7 @@ def physical_pkn_volume_balance(
         "pkn_H_w_m": float(H_w_m),
         "pkn_H_w_source": "fixed_50m_human_required",
         "pkn_I_F": float(I_F),
-        "pkn_I_F_source": "human_required_0p3875_integral",
+        "pkn_I_F_source": "human_required_constant",
         "pkn_E_prime_mpa": float(E_prime_mpa),
     }
 

@@ -699,7 +699,7 @@ class TestCLIClosureBatchSmoke:
 
 class TestPhysicalPKN:
     def test_physical_pkn_fracture_volume_formula(self):
-        L, H_w, P_net, E_prime, I_F = 10.0, 50.0, 5.0, 36000.0, 0.3875
+        L, H_w, P_net, E_prime, I_F = 10.0, 50.0, 5.0, 36000.0, 0.722464726919
         expected = math.pi * I_F / E_prime * L * H_w ** 2 * P_net
         result = physical_pkn_fracture_volume(L, H_w, P_net, E_prime, I_F=I_F)
         assert result == pytest.approx(expected, rel=1e-10)
@@ -738,8 +738,8 @@ class TestPhysicalPKN:
     def test_compute_physical_leakoff_C(self):
         slope = -2.0
         H_w, E_prime, H_p, tp, xi = 50.0, 36000.0, 25.0, 600.0, 0.8
-        C = compute_physical_leakoff_C(slope, H_w, E_prime, H_p, tp, xi, I_F=0.3875)
-        expected = -(0.3875 * 50.0 ** 2 * 0.8) / (36000.0 * 25.0 * math.sqrt(600.0)) * (-2.0)
+        C = compute_physical_leakoff_C(slope, H_w, E_prime, H_p, tp, xi, I_F=0.722464726919)
+        expected = -(0.722464726919 * 50.0 ** 2 * 0.8) / (36000.0 * 25.0 * math.sqrt(600.0)) * (-2.0)
         assert C == pytest.approx(expected, rel=1e-10)
         assert C > 0
 
@@ -787,7 +787,7 @@ class TestPhysicalPKN:
         assert np.isfinite(result["pkn_half_length_mean_m"])
         assert result["pkn_half_length_mean_m"] > 0
         assert result["pkn_H_w_m"] == 50.0
-        assert result["pkn_I_F"] == 0.3875
+        assert result["pkn_I_F"] == pytest.approx(0.722464726919, rel=1e-10)
         assert result["stress_shadow_status"] == "ok"
         assert result["stable_segment_status"] == "ok"
         assert result["pkn_C_status"] == "ok"

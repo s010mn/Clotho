@@ -2798,7 +2798,7 @@ Branch: `sprint`
 
 - canonical `pkn_fracture_volume_m3` 改为 physical PKN storage formula：`V_f = π I_F/E' · L · H_w² · P_net`；
 - H_w 固定 50.0 m（human required）；
-- I_F 固定 0.3875（human required integral constant，不是 MEYER_IF 0.722464726919）；
+- I_F 固定 0.722464726919（human required constant）；
 - 应力阴影用 Sneddon kernel 线性系统求解：`(I + α·F)·ξ = 1`；
 - 泄失系数 C 从稳定段 P-vs-G dP/dG slope 推导；
 - K_lp(m) = 4√π·m·Γ(m)/((m+0.5)·Γ(m+0.5))；
@@ -2832,6 +2832,48 @@ legacy MVP pkn vs microseismic: Pearson=0.248 (from Phase 5A)
 边界：
 
 - closure outputs remain candidates, not final interpretation；
-- I_F=0.3875 integral expression confirmation remains TODO；
+- I_F=0.722464726919 integral expression confirmation remains TODO；
+- 不提交 PNG / CSV / 真实数据；
+- 不 push master。
+
+## Phase 5D.1 — physical PKN interpretation correction
+
+Branch: `sprint`
+
+核心变更：
+
+- I_F 从 0.3875 修正为 0.722464726919（人类指定常数）；
+- I_F 在 volume-balance 中代数消去：最终 V_f 对 I_F 不敏感，但影响中间量（L ∝ 1/I_F, C ∝ I_F）；
+- 当前只有 3/30 段具有 Barree 闭合候选（stage 1, 10, 29），physical PKN 只对这 3 段有结果；
+- n=3 下相关系数无统计显著性，不能作为物理结论依据。
+
+Reference smoke（well4, 30 stages, I_F=0.722464726919）：
+
+```text
+pkn_ok: 3, not_computed: 27
+physical pkn_fracture_volume_m3 vs microseismic: Pearson=0.519, Spearman=0.500 (n=3)
+physical pkn_fracture_volume_m3 vs electromagnetic: Pearson=-0.427, Spearman=-0.500 (n=3)
+no-shadow control: identical total volumes (shadow changes cluster allocation only)
+legacy MVP pkn vs microseismic: Pearson=-0.874, Spearman=-1.000 (n=3)
+legacy MVP pkn vs electromagnetic: Pearson=-0.077, Spearman=-0.500 (n=3)
+```
+
+stress shadow diagnostic：
+
+- alpha=1 vs alpha=0: total volume identical (diff=0.000 for all 3 stages)；
+- cluster half-length mean: alpha=1 约为 alpha=0 的 2.5 倍；
+- 原因：volume-balance 按总注入体积归一化求解，shadow 主要改变簇间分配。
+
+GROUP_MEETING_GFUNCTION_VOLUME.md 更新：
+
+- 替换为 Phase 5D/5D.1 physical PKN 结果；
+- n=3 不足以评估，明确写入；
+- negative correlation 历史仍保留；
+- 不声称验证成功或失败。
+
+边界：
+
+- closure outputs remain candidates, not final interpretation；
+- I_F=0.722464726919 integral expression confirmation remains TODO；
 - 不提交 PNG / CSV / 真实数据；
 - 不 push master。

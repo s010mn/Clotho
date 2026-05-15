@@ -35,31 +35,31 @@ stage 参数表
 - 压力对 G-time 的导数预览：`dP/dG` 和 `G dP/dG`；
 - 导数 CSV 导出；
 - `derivative-batch` 批量复现实验入口；
-- deadline closure-volume MVP（`closure-batch`）：
+- closure-volume estimate（`closure-batch`）：
   - 自动裂缝起裂候选 + 修正 tp；
   - Barree tangent closure candidate；
   - McClure-style compliance closure candidate；
   - 有效进缝液量修正（井筒存储 + 射孔摩阻）；
-  - PKN / volume-balance 裂缝体积估算；
+  - physical PKN storage volume（V_f = π I_F/E' · L · H_w² · P_net）；
+  - stress shadow linear system（(I+αF)ξ=1）+ cluster allocation；
+  - stable P-vs-G segment detection + leakoff coefficient C；
+  - legacy MVP PKN 结果保留为 `legacy_mvp_pkn_*` 字段；
   - 观测相关性对照（微地震/电磁）；
   - 所有结果标记 `closure_is_candidate=True, closure_is_final_interpretation=False`。
 
 ## 当前不做
 
-当前 `closure-batch` 只做 deadline MVP 级别的 PKN / volume-balance estimate。
+当前 `closure-batch` 输出是 candidate/estimate，不是最终论文级模型。
 Clotho 当前仍然不自动执行：
 
 - final calibrated PKN model；
-- rigorous Carter leakoff integration；
-- full volume-balance inversion；
+- rigorous Carter leakoff integration（当前 C 从 stable dP/dG slope 推导）；
 - closure diagnostics（自动诊断）；
 - final closure-pressure interpretation；
 - ISIP / closure 自动解释；
 - pressure smoothing；
 - automatic active-bleedoff detection；
 - resampling；
-- stress-shadow；
-- cluster allocation；
 - fracture inversion；
 - Excel / PNG reporting。
 
