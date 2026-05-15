@@ -436,3 +436,28 @@ def test_falloff_window_after_shut_in_rejects_bad_end_elapsed(tmp_path, bad_end)
 
 def test_injection_window_policy_names_future_tp_choices() -> None:
     assert InjectionWindowPolicy.VOLUME_OVER_MAX_SUSTAINED_RATE.value == "volume_over_max_sustained_rate"
+
+
+def test_read_stage_params_cluster_spacings_fleak_m(tmp_path) -> None:
+    csv = tmp_path / "sp.csv"
+    csv.write_text(
+        "well,stage,file,shut_in,n,spacing,hw,e_gpa,nu,sigma_min,"
+        "cluster_spacings,fleak,m\n"
+        "W1,1,s1.csv,10:00:00,4,8.4,50.0,33.3,0.23,99.1,"
+        "8.4;8.4;8.4,0.5,0.8\n"
+        "W1,2,s2.csv,11:00:00,3,11.0,50.0,33.3,0.23,99.1,"
+        ",0.25,\n",
+        encoding="utf-8",
+    )
+    infos = read_stage_params(csv)
+    assert len(infos) == 2
+
+    s1 = infos[0]
+    assert s1.cluster_spacings_list == [8.4, 8.4, 8.4]
+    assert s1.fleak == 0.5
+    assert s1.g_function_m == 0.8
+
+    s2 = infos[1]
+    assert s2.cluster_spacings_list is None
+    assert s2.fleak == 0.25
+    assert s2.g_function_m is None

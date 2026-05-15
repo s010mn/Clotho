@@ -250,6 +250,8 @@ def build_parser() -> argparse.ArgumentParser:
     closure_batch.add_argument("--wellbore-storage-coeff-m3-per-mpa", default=0.0, type=float, help="Wellbore storage coefficient for volume correction.")
     closure_batch.add_argument("--method-preference", choices=["barree", "mcclure", "barree-then-mcclure", "mcclure-then-barree"], default="barree-then-mcclure", help="Closure candidate method preference.")
     closure_batch.add_argument("--well", default=None, help="Optional well name filter.")
+    closure_batch.add_argument("--stress-shadow-alpha", default=1.0, type=float, help="Stress shadow coupling alpha (0=no shadow).")
+    closure_batch.add_argument("--no-stress-shadow", action="store_true", help="Disable stress shadow (alpha=0).")
 
     return parser
 
@@ -855,6 +857,7 @@ def _run_closure_batch(args: argparse.Namespace) -> int:
         perforation_friction_mpa=args.perforation_friction_mpa,
         wellbore_storage_coeff_m3_per_mpa=args.wellbore_storage_coeff_m3_per_mpa,
         method_preference=args.method_preference,
+        stress_shadow_alpha=0.0 if args.no_stress_shadow else args.stress_shadow_alpha,
         well=args.well,
     )
     paths = write_closure_batch_outputs(

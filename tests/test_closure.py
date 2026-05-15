@@ -10,12 +10,18 @@ import pandas as pd
 import pytest
 
 from clotho.closure import (
+    K_lp,
     build_observation_correlation_table,
+    compute_physical_leakoff_C,
+    compute_stress_shadow,
     effective_volume_correction,
+    legacy_mvp_pkn_volume_balance_estimate,
+    physical_pkn_fracture_volume,
+    physical_pkn_volume_balance,
     pick_barree_tangent_closure_candidate,
     pick_fracture_initiation_candidate,
     pick_mcclure_compliance_closure_candidate,
-    pkn_volume_balance_estimate,
+    pick_stable_pressure_g_segment,
     run_closure_batch,
     select_closure_candidate,
     write_closure_batch_outputs,
@@ -325,7 +331,7 @@ class TestEffectiveVolumeCorrection:
 
 class TestPKNVolumeBalance:
     def test_basic_pkn_estimate(self):
-        result = pkn_volume_balance_estimate(
+        result = legacy_mvp_pkn_volume_balance_estimate(
             effective_injected_volume_m3=100.0,
             closure_pressure_mpa=80.0,
             minimum_stress_prior_mpa=60.0,
@@ -343,7 +349,7 @@ class TestPKNVolumeBalance:
         assert result["pkn_half_length_mean_m"] > 0
 
     def test_missing_modulus_fails(self):
-        result = pkn_volume_balance_estimate(
+        result = legacy_mvp_pkn_volume_balance_estimate(
             effective_injected_volume_m3=100.0,
             closure_pressure_mpa=80.0,
             youngs_modulus_gpa=None,
@@ -354,7 +360,7 @@ class TestPKNVolumeBalance:
         assert "youngs_modulus_gpa" in result["pkn_warning"]
 
     def test_missing_closure_fails(self):
-        result = pkn_volume_balance_estimate(
+        result = legacy_mvp_pkn_volume_balance_estimate(
             effective_injected_volume_m3=100.0,
             closure_pressure_mpa=None,
             youngs_modulus_gpa=30.0,
@@ -364,7 +370,7 @@ class TestPKNVolumeBalance:
         assert result["pkn_volume_status"] == "failed"
 
     def test_no_leakoff_without_slope(self):
-        result = pkn_volume_balance_estimate(
+        result = legacy_mvp_pkn_volume_balance_estimate(
             effective_injected_volume_m3=100.0,
             closure_pressure_mpa=80.0,
             minimum_stress_prior_mpa=60.0,
@@ -689,3 +695,175 @@ class TestCLIClosureBatchSmoke:
 
         assert exit_code == 0
         assert output_path.exists()
+
+
+class TestPhysicalPKN:
+    def test_physical_pkn_fracture_volume_formula(self):
+        L, H_w, P_net, E_prime, I_F = 10.0, 50.0, 5.0, 36000.0, 0.3875
+        expected = math.pi * I_F / E_prime * L * H_w ** 2 * P_net
+        result = physical_pkn_fracture_volume(L, H_w, P_net, E_prime, I_F=I_F)
+        assert result == pytest.approx(expected, rel=1e-10)
+        assert result > 0
+
+    def test_stress_shadow_linear_system(self):
+        result = compute_stress_shadow(3, 10.0, 50.0, alpha=1.0)
+        assert result["stress_shadow_status"] == "ok"
+        xi = result["stress_shadow_xi"]
+        assert len(xi) == 3
+        assert np.all(xi > 0)
+        assert xi[0] == pytest.approx(xi[2], rel=1e-10)
+        assert xi[1] < xi[0]
+        assert np.isfinite(result["stress_shadow_condition_number"])
+
+        no_shadow = compute_stress_shadow(3, 10.0, 50.0, alpha=0.0)
+        assert no_shadow["stress_shadow_status"] == "ok"
+        assert np.allclose(no_shadow["stress_shadow_xi"], 1.0)
+
+    def test_stable_segment_detection(self):
+        n = 30
+        g_time = np.linspace(0.1, 3.0, n)
+        pressure = -5.0 * g_time + 100.0
+        pressure[20:] += np.random.default_rng(42).normal(0, 2, n - 20)
+        elapsed = np.arange(1, n + 1, dtype=float) * 10.0
+
+        result = pick_stable_pressure_g_segment(
+            g_time, pressure, elapsed,
+            min_elapsed_seconds=1.0, min_points=5, min_r2=0.95,
+        )
+        assert result["stable_segment_status"] == "ok"
+        assert result["stable_dP_dG_slope_mpa"] == pytest.approx(-5.0, abs=0.5)
+        assert result["stable_dP_dG_r2"] >= 0.95
+        assert result["stable_segment_point_count"] >= 5
+
+    def test_compute_physical_leakoff_C(self):
+        slope = -2.0
+        H_w, E_prime, H_p, tp, xi = 50.0, 36000.0, 25.0, 600.0, 0.8
+        C = compute_physical_leakoff_C(slope, H_w, E_prime, H_p, tp, xi, I_F=0.3875)
+        expected = -(0.3875 * 50.0 ** 2 * 0.8) / (36000.0 * 25.0 * math.sqrt(600.0)) * (-2.0)
+        assert C == pytest.approx(expected, rel=1e-10)
+        assert C > 0
+
+    def test_K_lp_known_values(self):
+        k05 = K_lp(0.5)
+        expected_05 = 4.0 * math.sqrt(math.pi) * 0.5 * math.gamma(0.5) / (
+            1.0 * math.gamma(1.0))
+        assert k05 == pytest.approx(expected_05, rel=1e-10)
+
+        k10 = K_lp(1.0)
+        expected_10 = 4.0 * math.sqrt(math.pi) * 1.0 * math.gamma(1.0) / (
+            1.5 * math.gamma(1.5))
+        assert k10 == pytest.approx(expected_10, rel=1e-10)
+
+    def test_physical_volume_balance_end_to_end(self):
+        n = 50
+        tp = 600.0
+        elapsed = np.arange(1, n + 1, dtype=float)
+        delta = elapsed / tp
+        g_time = np.asarray(nolte_g_time(delta, 0.8), dtype=float)
+        pressure = 120.0 - 3.0 * g_time
+
+        E_prime = 33.3 * 1000.0 / (1.0 - 0.23 ** 2)
+        result = physical_pkn_volume_balance(
+            n_clusters=4,
+            cluster_spacings_m=8.4,
+            H_w_m=50.0,
+            fleak=0.5,
+            E_prime_mpa=E_prime,
+            closure_pressure_mpa=110.0,
+            minimum_stress_prior_mpa=99.1,
+            perforation_friction_mpa=0.0,
+            g_time=g_time,
+            pressure_mpa=pressure,
+            elapsed_seconds=elapsed,
+            closure_index=40,
+            tp_seconds=tp,
+            g_function_m=0.8,
+            effective_injected_volume_m3=3000.0,
+            alpha=1.0,
+        )
+        assert result["pkn_volume_status"] == "ok"
+        assert np.isfinite(result["pkn_fracture_volume_m3"])
+        assert result["pkn_fracture_volume_m3"] > 0
+        assert np.isfinite(result["pkn_half_length_mean_m"])
+        assert result["pkn_half_length_mean_m"] > 0
+        assert result["pkn_H_w_m"] == 50.0
+        assert result["pkn_I_F"] == 0.3875
+        assert result["stress_shadow_status"] == "ok"
+        assert result["stable_segment_status"] == "ok"
+        assert result["pkn_C_status"] == "ok"
+        assert result["pkn_cluster_count"] == 4
+
+    def test_physical_pkn_no_fallback_to_mvp(self):
+        n = 10
+        elapsed = np.arange(1, n + 1, dtype=float)
+        g_time = np.linspace(0.01, 0.5, n)
+        pressure = 120.0 + np.random.default_rng(99).normal(0, 5, n)
+
+        E_prime = 33.3 * 1000.0 / (1.0 - 0.23 ** 2)
+        result = physical_pkn_volume_balance(
+            n_clusters=3,
+            cluster_spacings_m=10.0,
+            H_w_m=50.0,
+            fleak=0.5,
+            E_prime_mpa=E_prime,
+            closure_pressure_mpa=110.0,
+            minimum_stress_prior_mpa=99.1,
+            g_time=g_time,
+            pressure_mpa=pressure,
+            elapsed_seconds=elapsed,
+            tp_seconds=600.0,
+            g_function_m=0.8,
+            effective_injected_volume_m3=3000.0,
+            stable_min_points=100,
+        )
+        assert result["pkn_volume_status"] == "failed"
+        assert np.isnan(result["pkn_fracture_volume_m3"])
+
+    def test_cli_closure_batch_physical_pkn_fields(self, tmp_path: Path):
+        stage_dir = tmp_path / "stage_data"
+        stage_dir.mkdir()
+
+        shut_in = _write_synthetic_stage_csv(stage_dir / "stage_01.csv", n_pre=50, n_post=150)
+
+        params = pd.DataFrame([
+            {"well": "W1", "stage": 1, "file": "stage_data/stage_01.csv",
+             "shut_in": shut_in, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25,
+             "n": 4, "spacing": 8.0, "cluster_spacings": "8;8;8",
+             "fleak": 0.5, "m": 0.8},
+        ])
+        params.to_csv(tmp_path / "stage_params.csv", index=False)
+
+        manifest = pd.DataFrame([
+            {"stage": 1, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+        ])
+        manifest.to_csv(tmp_path / "manifest.csv", index=False)
+
+        output_path = tmp_path / "closure_summary.csv"
+
+        from clotho.cli import main
+        exit_code = main([
+            "closure-batch",
+            "--stage-params", str(tmp_path / "stage_params.csv"),
+            "--well-root", str(tmp_path),
+            "--manifest", str(tmp_path / "manifest.csv"),
+            "--output", str(output_path),
+            "--volume-column", "total_volume",
+            "--rate-time-unit", "minute",
+            "--g-time-m", "0.8",
+            "--closure-min-elapsed-seconds", "5",
+            "--stress-shadow-alpha", "1.0",
+        ])
+
+        assert exit_code == 0
+        assert output_path.exists()
+
+        summary = pd.read_csv(output_path)
+        assert "pkn_model_name" in summary.columns
+        assert "pkn_H_w_m" in summary.columns
+        assert "pkn_I_F" in summary.columns
+        assert "stress_shadow_status" in summary.columns
+        assert "stable_segment_status" in summary.columns
+        assert "legacy_mvp_pkn_fracture_volume_m3" in summary.columns
+        assert (summary["closure_is_candidate"] == True).all()  # noqa: E712
+        assert (summary["closure_is_final_interpretation"] == False).all()  # noqa: E712

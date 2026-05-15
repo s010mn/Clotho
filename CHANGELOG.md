@@ -2789,3 +2789,49 @@ Branch: `sprint`
 - 不提交 PNG / CSV / 真实数据；
 - 不 push master；
 - closure outputs remain candidates, not final interpretation。
+
+## Phase 5D — physical PKN storage volume implementation
+
+Branch: `sprint`
+
+核心变更：
+
+- canonical `pkn_fracture_volume_m3` 改为 physical PKN storage formula：`V_f = π I_F/E' · L · H_w² · P_net`；
+- H_w 固定 50.0 m（human required）；
+- I_F 固定 0.3875（human required integral constant，不是 MEYER_IF 0.722464726919）；
+- 应力阴影用 Sneddon kernel 线性系统求解：`(I + α·F)·ξ = 1`；
+- 泄失系数 C 从稳定段 P-vs-G dP/dG slope 推导；
+- K_lp(m) = 4√π·m·Γ(m)/((m+0.5)·Γ(m+0.5))；
+- 旧 MVP PKN 结果降级为 `legacy_mvp_pkn_*` 字段；
+- StageInfo 新增 cluster_spacings_list, fleak, g_function_m。
+
+新增函数：
+
+- `physical_pkn_fracture_volume()`, `compute_stress_shadow()`, `pick_stable_pressure_g_segment()`
+- `compute_physical_leakoff_C()`, `K_lp()`, `physical_pkn_volume_balance()`
+
+CLI 新增：
+
+- `--stress-shadow-alpha FLOAT` (default 1.0)
+- `--no-stress-shadow` (alpha=0)
+
+Reference smoke（well4, 30 stages, α=1.0 baseline + α=0 no-shadow control）：
+
+```text
+physical PKN ok: 28, not_computed: 2 (stage 4, 25)
+stable segment ok: 28
+stress shadow ok: 28
+physical pkn_fracture_volume_m3 vs microseismic: Pearson=-0.259, Spearman=-0.292
+physical pkn_fracture_volume_m3 vs electromagnetic: Pearson=0.075, Spearman=0.170
+no-shadow control: identical correlations (shadow changes cluster allocation, not total volume)
+legacy MVP pkn vs microseismic: Pearson=0.248 (from Phase 5A)
+```
+
+测试：148 passed（140 old + 8 new physical PKN tests）。
+
+边界：
+
+- closure outputs remain candidates, not final interpretation；
+- I_F=0.3875 integral expression confirmation remains TODO；
+- 不提交 PNG / CSV / 真实数据；
+- 不 push master。

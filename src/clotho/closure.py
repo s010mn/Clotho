@@ -382,7 +382,7 @@ def effective_volume_correction(
     }
 
 
-def pkn_volume_balance_estimate(
+def legacy_mvp_pkn_volume_balance_estimate(
     effective_injected_volume_m3: float,
     closure_pressure_mpa: float | None,
     *,
@@ -491,6 +491,423 @@ def pkn_volume_balance_estimate(
         "pkn_segment_end": segment_end,
         "pkn_warning": "",
     }
+
+
+PHYSICAL_PKN_IF = 0.3875
+PHYSICAL_PKN_HW_M = 50.0
+
+
+def physical_pkn_fracture_volume(
+    L_m: float,
+    H_w_m: float,
+    P_net_mpa: float,
+    E_prime_mpa: float,
+    *,
+    I_F: float = PHYSICAL_PKN_IF,
+) -> float:
+    """V_f = pi * I_F / E' * L * H_w^2 * P_net [m^3]."""
+    if L_m <= 0 or H_w_m <= 0 or P_net_mpa <= 0 or E_prime_mpa <= 0:
+        return 0.0
+    return math.pi * I_F / E_prime_mpa * L_m * H_w_m ** 2 * P_net_mpa
+
+
+def compute_stress_shadow(
+    n: int,
+    cluster_spacings_m: list[float] | float,
+    H_w_m: float,
+    *,
+    alpha: float = 1.0,
+) -> dict[str, Any]:
+    """Sneddon stress shadow: (I + alpha * F) * xi = 1."""
+    result: dict[str, Any] = {
+        "stress_shadow_status": "failed",
+        "stress_shadow_alpha": float(alpha),
+        "stress_shadow_kernel": "sneddon",
+        "stress_shadow_condition_number": np.nan,
+        "stress_shadow_xi": np.ones(max(n, 1)),
+        "stress_shadow_xi_min": np.nan,
+        "stress_shadow_xi_max": np.nan,
+        "stress_shadow_xi_mean": np.nan,
+        "stress_shadow_xi_sum": np.nan,
+    }
+
+    if n <= 0:
+        result["stress_shadow_status"] = "failed"
+        return result
+
+    if n == 1 or alpha == 0.0:
+        xi = np.ones(n)
+        result.update({
+            "stress_shadow_status": "ok",
+            "stress_shadow_condition_number": 1.0,
+            "stress_shadow_xi": xi,
+            "stress_shadow_xi_min": 1.0,
+            "stress_shadow_xi_max": 1.0,
+            "stress_shadow_xi_mean": 1.0,
+            "stress_shadow_xi_sum": float(n),
+        })
+        return result
+
+    if isinstance(cluster_spacings_m, (int, float)):
+        spacings = [float(cluster_spacings_m)] * (n - 1)
+    else:
+        spacings = [float(s) for s in cluster_spacings_m]
+
+    if len(spacings) == n - 1:
+        positions = np.concatenate(([0.0], np.cumsum(spacings)))
+    elif len(spacings) == n:
+        positions = np.array(spacings, dtype=float)
+    else:
+        positions = np.arange(n, dtype=float) * (spacings[0] if spacings else 10.0)
+
+    a = H_w_m / 2.0
+    dist = np.abs(positions[:, None] - positions[None, :])
+    F = 1.0 - dist / np.sqrt(dist ** 2 + a ** 2)
+    np.fill_diagonal(F, 0.0)
+
+    A = np.eye(n) + alpha * F
+    cond = float(np.linalg.cond(A))
+
+    if cond > 1e12:
+        result["stress_shadow_condition_number"] = cond
+        return result
+
+    xi = np.linalg.solve(A, np.ones(n))
+
+    result.update({
+        "stress_shadow_status": "ok",
+        "stress_shadow_condition_number": cond,
+        "stress_shadow_xi": xi,
+        "stress_shadow_xi_min": float(np.min(xi)),
+        "stress_shadow_xi_max": float(np.max(xi)),
+        "stress_shadow_xi_mean": float(np.mean(xi)),
+        "stress_shadow_xi_sum": float(np.sum(xi)),
+    })
+    return result
+
+
+def pick_stable_pressure_g_segment(
+    g_time: np.ndarray,
+    pressure_mpa: np.ndarray,
+    elapsed_seconds: np.ndarray,
+    *,
+    closure_index: int | None = None,
+    min_elapsed_seconds: float = 15.0,
+    min_points: int = 8,
+    min_r2: float = 0.8,
+) -> dict[str, Any]:
+    """Find longest linear P-vs-G segment before closure."""
+    failed: dict[str, Any] = {
+        "stable_segment_status": "not_found",
+        "stable_dP_dG_slope_mpa": np.nan,
+        "stable_dP_dG_intercept_mpa": np.nan,
+        "stable_dP_dG_r2": np.nan,
+        "stable_segment_start_index": np.nan,
+        "stable_segment_end_index": np.nan,
+        "stable_segment_start_elapsed_seconds": np.nan,
+        "stable_segment_end_elapsed_seconds": np.nan,
+        "stable_segment_point_count": 0,
+    }
+
+    mask = elapsed_seconds >= min_elapsed_seconds
+    if closure_index is not None:
+        idx_mask = np.arange(len(elapsed_seconds)) <= closure_index
+        mask = mask & idx_mask
+
+    valid_idx = np.where(mask)[0]
+    if len(valid_idx) < min_points:
+        return failed
+
+    best_start = -1
+    best_end = -1
+    best_n = 0
+    best_r2 = -1.0
+    best_slope = np.nan
+    best_intercept = np.nan
+
+    for window_len in range(len(valid_idx), min_points - 1, -1):
+        for start_pos in range(len(valid_idx) - window_len + 1):
+            seg = valid_idx[start_pos: start_pos + window_len]
+            g_seg = g_time[seg]
+            p_seg = pressure_mpa[seg]
+
+            if len(np.unique(g_seg)) < 2:
+                continue
+
+            coeffs = np.polyfit(g_seg, p_seg, 1)
+            slope, intercept = float(coeffs[0]), float(coeffs[1])
+            p_pred = slope * g_seg + intercept
+            ss_res = float(np.sum((p_seg - p_pred) ** 2))
+            ss_tot = float(np.sum((p_seg - np.mean(p_seg)) ** 2))
+            r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+            if r2 >= min_r2 and window_len > best_n:
+                best_start = int(seg[0])
+                best_end = int(seg[-1])
+                best_n = window_len
+                best_r2 = r2
+                best_slope = slope
+                best_intercept = intercept
+                break
+        if best_n >= window_len:
+            break
+
+    if best_n < min_points or best_slope >= 0:
+        return failed
+
+    return {
+        "stable_segment_status": "ok",
+        "stable_dP_dG_slope_mpa": best_slope,
+        "stable_dP_dG_intercept_mpa": best_intercept,
+        "stable_dP_dG_r2": best_r2,
+        "stable_segment_start_index": best_start,
+        "stable_segment_end_index": best_end,
+        "stable_segment_start_elapsed_seconds": float(elapsed_seconds[best_start]),
+        "stable_segment_end_elapsed_seconds": float(elapsed_seconds[best_end]),
+        "stable_segment_point_count": best_n,
+    }
+
+
+def compute_physical_leakoff_C(
+    dP_dG_slope: float,
+    H_w_m: float,
+    E_prime_mpa: float,
+    H_p_m: float,
+    tp_seconds: float,
+    xi: float,
+    *,
+    I_F: float = PHYSICAL_PKN_IF,
+) -> float:
+    """C = -(I_F * H_w^2 * xi) / (E' * H_p * sqrt(tp)) * dP/dG."""
+    if E_prime_mpa <= 0 or H_p_m <= 0 or tp_seconds <= 0:
+        return 0.0
+    return -(I_F * H_w_m ** 2 * xi) / (E_prime_mpa * H_p_m * math.sqrt(tp_seconds)) * dP_dG_slope
+
+
+def K_lp(m: float) -> float:
+    """K_lp(m) = 4*sqrt(pi) * m * Gamma(m) / ((m+0.5) * Gamma(m+0.5))."""
+    if m <= 0:
+        return 0.0
+    return 4.0 * math.sqrt(math.pi) * m * math.gamma(m) / (
+        (m + 0.5) * math.gamma(m + 0.5)
+    )
+
+
+def physical_pkn_volume_balance(
+    *,
+    n_clusters: int,
+    cluster_spacings_m: list[float] | float,
+    H_w_m: float = PHYSICAL_PKN_HW_M,
+    fleak: float | None = None,
+    E_prime_mpa: float,
+    closure_pressure_mpa: float | None,
+    minimum_stress_prior_mpa: float | None,
+    perforation_friction_mpa: float = 0.0,
+    g_time: np.ndarray,
+    pressure_mpa: np.ndarray,
+    elapsed_seconds: np.ndarray,
+    closure_index: int | None = None,
+    tp_seconds: float,
+    g_function_m: float = 0.8,
+    effective_injected_volume_m3: float,
+    alpha: float = 1.0,
+    I_F: float = PHYSICAL_PKN_IF,
+    stable_min_elapsed_seconds: float = 15.0,
+    stable_min_points: int = 8,
+    stable_min_r2: float = 0.8,
+) -> dict[str, Any]:
+    """Physical PKN storage volume balance with stress shadow and stable-segment C."""
+
+    base: dict[str, Any] = {
+        "pkn_model_name": "physical_pkn_storage",
+        "pkn_model_version": "phase5d",
+        "pkn_H_w_m": float(H_w_m),
+        "pkn_H_w_source": "fixed_50m_human_required",
+        "pkn_I_F": float(I_F),
+        "pkn_I_F_source": "human_required_0p3875_integral",
+        "pkn_E_prime_mpa": float(E_prime_mpa),
+    }
+
+    def _fail(reason: str) -> dict[str, Any]:
+        out = dict(base)
+        out.update({
+            "pkn_volume_status": "failed",
+            "pkn_fracture_volume_m3": np.nan,
+            "pkn_fracture_volume_std_m3": np.nan,
+            "pkn_half_length_mean_m": np.nan,
+            "pkn_half_length_std_m": np.nan,
+            "pkn_net_pressure_min_mpa": np.nan,
+            "pkn_net_pressure_max_mpa": np.nan,
+            "pkn_net_pressure_mean_mpa": np.nan,
+            "pkn_cluster_count": n_clusters,
+            "pkn_cluster_length_min_m": np.nan,
+            "pkn_cluster_length_max_m": np.nan,
+            "pkn_cluster_length_mean_m": np.nan,
+            "pkn_cluster_length_std_m": np.nan,
+            "pkn_stable_row_count": 0,
+            "pkn_leakoff_coefficient": np.nan,
+            "pkn_segment_start": np.nan,
+            "pkn_segment_end": np.nan,
+            "pkn_K_lp": np.nan,
+            "pkn_C_status": "failed",
+            "pkn_C_min": np.nan,
+            "pkn_C_max": np.nan,
+            "pkn_C_mean": np.nan,
+            "pkn_H_p_m": np.nan,
+            "pkn_fleak": np.nan,
+            "pkn_warning": reason,
+            "stress_shadow_status": "failed",
+            "stress_shadow_alpha": float(alpha),
+            "stress_shadow_kernel": "sneddon",
+            "stress_shadow_condition_number": np.nan,
+            "stress_shadow_xi_min": np.nan,
+            "stress_shadow_xi_max": np.nan,
+            "stress_shadow_xi_mean": np.nan,
+            "stable_segment_status": "not_found",
+            "stable_dP_dG_slope_mpa": np.nan,
+            "stable_dP_dG_r2": np.nan,
+            "stable_segment_start_index": np.nan,
+            "stable_segment_end_index": np.nan,
+            "stable_segment_start_elapsed_seconds": np.nan,
+            "stable_segment_end_elapsed_seconds": np.nan,
+            "stable_segment_point_count": 0,
+        })
+        return out
+
+    if n_clusters < 1:
+        return _fail("n_clusters_invalid")
+    if not np.isfinite(E_prime_mpa) or E_prime_mpa <= 0:
+        return _fail("E_prime_invalid")
+    if not np.isfinite(effective_injected_volume_m3) or effective_injected_volume_m3 <= 0:
+        return _fail("effective_volume_invalid")
+    if not np.isfinite(tp_seconds) or tp_seconds <= 0:
+        return _fail("tp_invalid")
+
+    shadow = compute_stress_shadow(n_clusters, cluster_spacings_m, H_w_m, alpha=alpha)
+    if shadow["stress_shadow_status"] != "ok":
+        out = _fail("stress_shadow_linear_system_failed")
+        out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
+        return out
+
+    xi = shadow["stress_shadow_xi"]
+
+    seg = pick_stable_pressure_g_segment(
+        g_time, pressure_mpa, elapsed_seconds,
+        closure_index=closure_index,
+        min_elapsed_seconds=stable_min_elapsed_seconds,
+        min_points=stable_min_points,
+        min_r2=stable_min_r2,
+    )
+    if seg["stable_segment_status"] != "ok":
+        out = _fail("no_stable_pressure_g_segment")
+        out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
+        out.update(seg)
+        return out
+
+    fleak_val = fleak if fleak is not None and np.isfinite(fleak) and fleak > 0 else 0.5
+    fleak_warning = "" if (fleak is not None and np.isfinite(fleak) and fleak > 0) else "fleak_default_0p5"
+    H_p_m = fleak_val * H_w_m
+
+    slope = seg["stable_dP_dG_slope_mpa"]
+    C_arr = np.array([
+        compute_physical_leakoff_C(slope, H_w_m, E_prime_mpa, H_p_m, tp_seconds, float(xi[i]), I_F=I_F)
+        for i in range(n_clusters)
+    ])
+
+    if not np.all(np.isfinite(C_arr)) or np.any(C_arr < 0):
+        out = _fail("invalid_C_from_stable_dP_dG")
+        out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
+        out.update(seg)
+        out["pkn_C_status"] = "failed"
+        return out
+
+    k_lp_val = K_lp(g_function_m)
+    xi_sum = float(np.sum(xi))
+    ratio = xi / xi_sum if xi_sum > 0 else np.ones(n_clusters) / n_clusters
+
+    sigma = float(minimum_stress_prior_mpa) if minimum_stress_prior_mpa is not None and np.isfinite(minimum_stress_prior_mpa) else 0.0
+    perf = float(perforation_friction_mpa)
+
+    seg_start = int(seg["stable_segment_start_index"])
+    seg_end = int(seg["stable_segment_end_index"])
+    stable_indices = list(range(seg_start, seg_end + 1))
+
+    all_V_total: list[float] = []
+    all_L: list[np.ndarray] = []
+    all_Pnet: list[np.ndarray] = []
+
+    for idx in stable_indices:
+        p_idx = float(pressure_mpa[idx])
+        P_net_arr = xi * max(p_idx - perf - sigma, 0.0)
+
+        if np.all(P_net_arr <= 0):
+            continue
+
+        unit = np.array([
+            math.pi * I_F / E_prime_mpa * H_w_m ** 2 * P_net_arr[i]
+            + C_arr[i] * H_p_m * math.sqrt(tp_seconds) * (k_lp_val + 4.0 * float(g_time[idx]))
+            for i in range(n_clusters)
+        ])
+
+        denom = float(np.sum(unit * ratio))
+        if denom <= 0:
+            continue
+
+        L_arr = effective_injected_volume_m3 * ratio / denom
+        V_f_arr = np.array([
+            physical_pkn_fracture_volume(float(L_arr[i]), H_w_m, float(P_net_arr[i]), E_prime_mpa, I_F=I_F)
+            for i in range(n_clusters)
+        ])
+
+        all_V_total.append(float(np.sum(V_f_arr)))
+        all_L.append(L_arr)
+        all_Pnet.append(P_net_arr)
+
+    if len(all_V_total) == 0:
+        out = _fail("net_pressure_nonpositive")
+        out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
+        out.update(seg)
+        out["pkn_C_status"] = "ok"
+        out["pkn_C_min"] = float(np.min(C_arr))
+        out["pkn_C_max"] = float(np.max(C_arr))
+        out["pkn_C_mean"] = float(np.mean(C_arr))
+        return out
+
+    V_arr = np.array(all_V_total)
+    L_all = np.concatenate(all_L)
+    Pnet_all = np.concatenate(all_Pnet)
+
+    result = dict(base)
+    result.update({
+        "pkn_volume_status": "ok",
+        "pkn_fracture_volume_m3": float(np.mean(V_arr)),
+        "pkn_fracture_volume_std_m3": float(np.std(V_arr)) if len(V_arr) > 1 else 0.0,
+        "pkn_half_length_mean_m": float(np.mean(L_all)),
+        "pkn_half_length_std_m": float(np.std(L_all)) if len(L_all) > 1 else 0.0,
+        "pkn_net_pressure_min_mpa": float(np.min(Pnet_all[Pnet_all > 0])) if np.any(Pnet_all > 0) else np.nan,
+        "pkn_net_pressure_max_mpa": float(np.max(Pnet_all)),
+        "pkn_net_pressure_mean_mpa": float(np.mean(Pnet_all[Pnet_all > 0])) if np.any(Pnet_all > 0) else np.nan,
+        "pkn_cluster_count": n_clusters,
+        "pkn_cluster_length_min_m": float(np.min(L_all)),
+        "pkn_cluster_length_max_m": float(np.max(L_all)),
+        "pkn_cluster_length_mean_m": float(np.mean(L_all)),
+        "pkn_cluster_length_std_m": float(np.std(L_all)) if len(L_all) > 1 else 0.0,
+        "pkn_stable_row_count": len(all_V_total),
+        "pkn_leakoff_coefficient": float(np.mean(C_arr)),
+        "pkn_segment_start": seg_start,
+        "pkn_segment_end": seg_end,
+        "pkn_K_lp": float(k_lp_val),
+        "pkn_C_status": "ok",
+        "pkn_C_min": float(np.min(C_arr)),
+        "pkn_C_max": float(np.max(C_arr)),
+        "pkn_C_mean": float(np.mean(C_arr)),
+        "pkn_H_p_m": float(H_p_m),
+        "pkn_fleak": float(fleak_val),
+        "pkn_warning": fleak_warning,
+    })
+    result.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
+    result.update(seg)
+    return result
 
 
 def build_observation_correlation_table(
@@ -634,6 +1051,7 @@ def _process_stage(
     perforation_friction_mpa: float,
     wellbore_storage_coeff_m3_per_mpa: float,
     method_preference: str,
+    stress_shadow_alpha: float = 1.0,
 ) -> dict[str, Any]:
     """处理单个 stage 的闭合候选分析。"""
     row: dict[str, Any] = {"stage": stage_info.stage}
@@ -758,7 +1176,7 @@ def _process_stage(
     closure_g = selected.get("selected_closure_g_time")
     closure_g_val = float(closure_g) if closure_g is not None and np.isfinite(closure_g) else None
 
-    pkn = pkn_volume_balance_estimate(
+    legacy_pkn = legacy_mvp_pkn_volume_balance_estimate(
         vol_result["effective_injected_volume_m3"],
         closure_p_val,
         minimum_stress_prior_mpa=stage_info.minimum_stress_prior_mpa,
@@ -770,7 +1188,47 @@ def _process_stage(
         g_time_at_closure=closure_g_val,
         perforation_friction_mpa=perforation_friction_mpa,
     )
-    row.update(pkn)
+    row["legacy_mvp_pkn_fracture_volume_m3"] = legacy_pkn.get("pkn_fracture_volume_m3", np.nan)
+    row["legacy_mvp_pkn_half_length_mean_m"] = legacy_pkn.get("pkn_half_length_mean_m", np.nan)
+    row["legacy_mvp_pkn_volume_status"] = legacy_pkn.get("pkn_volume_status", "failed")
+
+    E_prime = stage_info.youngs_modulus_gpa * 1000.0 / (1.0 - stage_info.poissons_ratio ** 2) if (
+        stage_info.youngs_modulus_gpa is not None and stage_info.poissons_ratio is not None
+        and np.isfinite(stage_info.youngs_modulus_gpa) and np.isfinite(stage_info.poissons_ratio)
+    ) else np.nan
+
+    closure_idx_for_seg = None
+    barree_ci = barree.get("barree_closure_index")
+    mcclure_ci = mcclure.get("mcclure_closure_index")
+    if selected.get("selected_closure_method") == "barree" and barree_ci is not None and np.isfinite(barree_ci):
+        closure_idx_for_seg = int(barree_ci)
+    elif selected.get("selected_closure_method") == "mcclure" and mcclure_ci is not None and np.isfinite(mcclure_ci):
+        closure_idx_for_seg = int(mcclure_ci)
+
+    n_cl = stage_info.num_clusters if stage_info.num_clusters is not None else 0
+    spacings: list[float] | float = stage_info.cluster_spacings_list if stage_info.cluster_spacings_list else (
+        stage_info.cluster_spacing_m if stage_info.cluster_spacing_m is not None else 10.0
+    )
+
+    physical_pkn = physical_pkn_volume_balance(
+        n_clusters=n_cl,
+        cluster_spacings_m=spacings,
+        H_w_m=PHYSICAL_PKN_HW_M,
+        fleak=stage_info.fleak,
+        E_prime_mpa=E_prime,
+        closure_pressure_mpa=closure_p_val,
+        minimum_stress_prior_mpa=stage_info.minimum_stress_prior_mpa,
+        perforation_friction_mpa=perforation_friction_mpa,
+        g_time=g_time_arr,
+        pressure_mpa=p_vals,
+        elapsed_seconds=elapsed,
+        closure_index=closure_idx_for_seg,
+        tp_seconds=tp_for_g,
+        g_function_m=stage_info.g_function_m if stage_info.g_function_m is not None else g_time_m,
+        effective_injected_volume_m3=vol_result["effective_injected_volume_m3"],
+        alpha=stress_shadow_alpha,
+    )
+    row.update(physical_pkn)
 
     return row
 
@@ -804,14 +1262,56 @@ def _empty_closure_fields() -> dict[str, Any]:
 
 def _empty_pkn_fields() -> dict[str, Any]:
     return {
+        "pkn_model_name": "physical_pkn_storage",
+        "pkn_model_version": "phase5d",
         "pkn_volume_status": "not_computed",
         "pkn_half_length_mean_m": np.nan,
         "pkn_half_length_std_m": np.nan,
         "pkn_fracture_volume_m3": np.nan,
+        "pkn_fracture_volume_std_m3": np.nan,
+        "pkn_H_w_m": np.nan,
+        "pkn_H_w_source": "",
+        "pkn_I_F": np.nan,
+        "pkn_I_F_source": "",
+        "pkn_E_prime_mpa": np.nan,
+        "pkn_net_pressure_min_mpa": np.nan,
+        "pkn_net_pressure_max_mpa": np.nan,
+        "pkn_net_pressure_mean_mpa": np.nan,
+        "pkn_cluster_count": np.nan,
+        "pkn_cluster_length_min_m": np.nan,
+        "pkn_cluster_length_max_m": np.nan,
+        "pkn_cluster_length_mean_m": np.nan,
+        "pkn_cluster_length_std_m": np.nan,
+        "pkn_stable_row_count": 0,
         "pkn_leakoff_coefficient": np.nan,
         "pkn_segment_start": np.nan,
         "pkn_segment_end": np.nan,
+        "pkn_K_lp": np.nan,
+        "pkn_C_status": "not_computed",
+        "pkn_C_min": np.nan,
+        "pkn_C_max": np.nan,
+        "pkn_C_mean": np.nan,
+        "pkn_H_p_m": np.nan,
+        "pkn_fleak": np.nan,
         "pkn_warning": "derivatives_not_available",
+        "stress_shadow_status": "not_computed",
+        "stress_shadow_alpha": np.nan,
+        "stress_shadow_kernel": "",
+        "stress_shadow_condition_number": np.nan,
+        "stress_shadow_xi_min": np.nan,
+        "stress_shadow_xi_max": np.nan,
+        "stress_shadow_xi_mean": np.nan,
+        "stable_segment_status": "not_computed",
+        "stable_dP_dG_slope_mpa": np.nan,
+        "stable_dP_dG_r2": np.nan,
+        "stable_segment_start_index": np.nan,
+        "stable_segment_end_index": np.nan,
+        "stable_segment_start_elapsed_seconds": np.nan,
+        "stable_segment_end_elapsed_seconds": np.nan,
+        "stable_segment_point_count": 0,
+        "legacy_mvp_pkn_fracture_volume_m3": np.nan,
+        "legacy_mvp_pkn_half_length_mean_m": np.nan,
+        "legacy_mvp_pkn_volume_status": "not_computed",
     }
 
 
@@ -831,6 +1331,7 @@ def run_closure_batch(
     perforation_friction_mpa: float = 0.0,
     wellbore_storage_coeff_m3_per_mpa: float = 0.0,
     method_preference: str = "barree-then-mcclure",
+    stress_shadow_alpha: float = 1.0,
     well: str | None = None,
 ) -> dict[str, Any]:
     """运行 closure-batch 批量闭合候选分析。
@@ -875,6 +1376,7 @@ def run_closure_batch(
             perforation_friction_mpa=perforation_friction_mpa,
             wellbore_storage_coeff_m3_per_mpa=wellbore_storage_coeff_m3_per_mpa,
             method_preference=method_preference,
+            stress_shadow_alpha=stress_shadow_alpha,
         )
 
         if observations is not None:

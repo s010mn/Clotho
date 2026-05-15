@@ -72,6 +72,9 @@ class StageInfo:
     microseismic_length_m: float | None
     microseismic_height_m: float | None
     electromagnetic_length_m: float | None
+    cluster_spacings_list: list[float] | None
+    fleak: float | None
+    g_function_m: float | None
     raw: dict[str, str]
 
 
@@ -95,6 +98,9 @@ _STAGE_PARAM_ALIASES = {
     "microseismic_length_m": ["微地震缝长", "microseismic_length_m"],
     "microseismic_height_m": ["微地震缝高", "microseismic_height_m"],
     "electromagnetic_length_m": ["广域电磁缝长", "electromagnetic_length_m", "em_length_m"],
+    "cluster_spacings_list": ["cluster_spacings"],
+    "fleak": ["fleak", "f_leak"],
+    "g_function_m": ["m"],
 }
 
 _STAGE_CURVE_ALIASES = {
@@ -129,6 +135,9 @@ def read_stage_params(path: str | Path) -> list[StageInfo]:
                 microseismic_length_m=_optional_float(raw, "microseismic_length_m"),
                 microseismic_height_m=_optional_float(raw, "microseismic_height_m"),
                 electromagnetic_length_m=_optional_float(raw, "electromagnetic_length_m"),
+                cluster_spacings_list=_optional_float_list(raw, "cluster_spacings_list"),
+                fleak=_optional_float(raw, "fleak"),
+                g_function_m=_optional_float(raw, "g_function_m"),
                 raw=raw,
             )
         )
@@ -506,6 +515,15 @@ def _optional_int(raw: dict[str, str], name: str) -> int | None:
 def _optional_float(raw: dict[str, str], name: str) -> float | None:
     value = _lookup(raw, name)
     return None if value is None or str(value).strip() == "" else float(value)
+
+
+def _optional_float_list(raw: dict[str, str], name: str, sep: str = ";") -> list[float] | None:
+    value = _lookup(raw, name)
+    if value is None or str(value).strip() == "":
+        return None
+    parts = str(value).strip().split(sep)
+    result = [float(p.strip()) for p in parts if p.strip()]
+    return result if result else None
 
 
 # 输入：一行原始字段和规范字段名。输出：按 alias 找到的原始值。
