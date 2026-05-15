@@ -54,6 +54,31 @@ def validate_pressure_derivative_inputs(g_time, pressure_mpa) -> tuple[np.ndarra
     return g, pressure
 
 
+def derivative_value_summary(values) -> dict[str, float | int]:
+    """统计导数数组的基本数值范围和符号数量。
+
+    这里只做数值摘要，不做物理解释。
+    正值、负值、零值都只是数据现象，不自动判断 closure。
+    """
+    array = np.asarray(values, dtype=float)
+    finite = array[np.isfinite(array)]
+    summary: dict[str, float | int] = {
+        "finite_count": int(len(finite)),
+        "nan_or_inf_count": int(len(array) - len(finite)),
+        "positive_count": int(np.count_nonzero(finite > 0.0)),
+        "negative_count": int(np.count_nonzero(finite < 0.0)),
+        "zero_count": int(np.count_nonzero(finite == 0.0)),
+        "min": float("nan"),
+        "median": float("nan"),
+        "max": float("nan"),
+    }
+    if len(finite):
+        summary["min"] = float(np.min(finite))
+        summary["median"] = float(np.median(finite))
+        summary["max"] = float(np.max(finite))
+    return summary
+
+
 def pressure_derivative_against_g_time(g_time, pressure_mpa) -> tuple[np.ndarray, np.ndarray]:
     """计算压力对 G-time 的数值导数。
 

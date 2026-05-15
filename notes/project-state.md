@@ -1455,3 +1455,32 @@ Phase 3I：valid falloff window 口径设计
 - reporting
 
 如果有效窗口或重复 elapsed 策略不能让 G-time 严格递增，则不计算导数，只报告 blocker。
+
+## Phase 4C：压力导数 CSV 导出与符号/尺度摘要
+
+新增 `window-audit --pressure-derivative-output`。
+
+当 `--pressure-derivative-preview` 成功计算导数时，可以把完整有效压降窗口导出为 CSV，字段包括：
+
+- elapsed_seconds
+- delta
+- nolte_g_time
+- pressure_mpa
+- dP_dG_mpa
+- G_dP_dG_mpa
+
+同时输出 dP/dG 和 G dP/dG 的有限值数量、正负号数量和 min/median/max。
+
+本阶段仍然不做：
+
+- closure
+- smoothing
+- automatic bleedoff detection
+- resampling
+- Carter
+- PKN
+- volume balance
+- fracture inversion
+- Excel/PNG reporting
+
+如果 readiness 不通过，不写 CSV，只报告 blocker。

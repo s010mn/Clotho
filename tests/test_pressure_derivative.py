@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from clotho.pressure_derivative import (
+    derivative_value_summary,
     pressure_derivative_against_g_time,
     validate_pressure_derivative_inputs,
 )
@@ -52,3 +53,18 @@ def test_validate_pressure_derivative_inputs_rejects_length_mismatch() -> None:
 def test_validate_pressure_derivative_inputs_rejects_non_1d_input() -> None:
     with pytest.raises(ValueError, match="一维"):
         validate_pressure_derivative_inputs([[0.0, 1.0, 2.0]], [[100.0, 99.0, 98.0]])
+
+
+def test_derivative_value_summary_counts_signs_and_finite_range() -> None:
+    values = np.array([-2.0, 0.0, 3.0, np.nan, np.inf])
+
+    summary = derivative_value_summary(values)
+
+    assert summary["finite_count"] == 3
+    assert summary["nan_or_inf_count"] == 2
+    assert summary["positive_count"] == 1
+    assert summary["negative_count"] == 1
+    assert summary["zero_count"] == 1
+    assert summary["min"] == -2.0
+    assert summary["median"] == 0.0
+    assert summary["max"] == 3.0

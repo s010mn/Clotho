@@ -5,10 +5,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from clotho import __version__
 from clotho.g_function import nolte_g_time
-from clotho.pressure_derivative import pressure_derivative_against_g_time
+from clotho.pressure_derivative import derivative_value_summary, pressure_derivative_against_g_time
 from clotho.stage_data import (
     StageInfo,
     add_estimated_bottomhole_pressure,
@@ -110,6 +111,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Number of derivative preview samples to print when --pressure-derivative-preview is provided.",
     )
+    window_audit.add_argument(
+        "--pressure-derivative-output",
+        default=None,
+        type=Path,
+        help="Optional CSV path for the full pressure derivative table. Requires --pressure-derivative-preview.",
+    )
 
     return parser
 
@@ -198,12 +205,25 @@ def _print_pressure_summary(prefix: str, summary: dict[str, float | int]) -> Non
     print(f"{prefix}_max={_format_optional_float(float(summary['max']))}")
 
 
+def _print_derivative_value_summary(prefix: str, summary: dict[str, float | int]) -> None:
+    """输出导数数值摘要；只描述数值，不做 closure 解释。"""
+    print(f"{prefix}_finite_count={summary['finite_count']}")
+    print(f"{prefix}_nan_or_inf_count={summary['nan_or_inf_count']}")
+    print(f"{prefix}_positive_count={summary['positive_count']}")
+    print(f"{prefix}_negative_count={summary['negative_count']}")
+    print(f"{prefix}_zero_count={summary['zero_count']}")
+    print(f"{prefix}_min={_format_optional_float(float(summary['min']))}")
+    print(f"{prefix}_median={_format_optional_float(float(summary['median']))}")
+    print(f"{prefix}_max={_format_optional_float(float(summary['max']))}")
+
+
 def _derivative_readiness_state(
     *,
     window,
     stage: StageInfo,
     elapsed_all,
     g_time_all,
+    tp_seconds: float,
 ) -> dict[str, object]:
     """组装未来 dP/dG 的最基本数据前置条件；这里不计算导数。"""
     elapsed_summary = _sequence_step_summary(elapsed_all)
@@ -244,24 +264,96 @@ def _derivative_readiness_state(
         "whp_summary": whp_summary,
         "pressure_summary": pressure_summary,
         "g_time_array": g_time_array,
+        "tp_seconds": float(tp_seconds),
         "blockers": blockers,
     }
 
 
-def _print_pressure_derivative_preview(*, readiness_state: dict[str, object], count: int) -> bool:
+def _pressure_step_counts(pressure) -> dict[str, int]:
+    """统计相邻压力差的正、负、零数量；只做数据摘要。"""
+    step = np.diff(np.asarray(pressure, dtype=float))
+    return {
+        "positive": int(np.count_nonzero(step > 0.0)),
+        "negative": int(np.count_nonzero(step < 0.0)),
+        "zero": int(np.count_nonzero(step == 0.0)),
+    }
+
+
+def _write_pressure_derivative_csv(
+    *,
+    path: Path,
+    readiness_state: dict[str, object],
+    delta,
+    g_time,
+    pressure,
+    dP_dG,
+    G_dP_dG,
+) -> None:
+    """写出完整有效窗口导数表；这是 CSV 数据输出，不是 Excel/PNG reporting。"""
+    output = Path(path)
+    if not output.parent.exists():
+        raise ValueError(f"parent directory does not exist: {output.parent}")
+
+    pressure_window = readiness_state["pressure_window"]
+    data: dict[str, object] = {
+        "row_number": np.arange(len(g_time), dtype=int),
+        "elapsed_seconds": pressure_window["elapsed_seconds"].to_numpy(dtype=float),
+        "delta": np.asarray(delta, dtype=float),
+        "nolte_g_time": np.asarray(g_time, dtype=float),
+        "pressure_column": [str(readiness_state["pressure_column"])] * len(g_time),
+        "pressure_mpa": np.asarray(pressure, dtype=float),
+        "wellhead_pressure_mpa": pressure_window["wellhead_pressure_mpa"].to_numpy(dtype=float),
+        "dP_dG_mpa": np.asarray(dP_dG, dtype=float),
+        "G_dP_dG_mpa": np.asarray(G_dP_dG, dtype=float),
+    }
+    if "estimated_bottomhole_pressure_mpa" in pressure_window.columns:
+        data["estimated_bottomhole_pressure_mpa"] = pressure_window[
+            "estimated_bottomhole_pressure_mpa"
+        ].to_numpy(dtype=float)
+    if "time_text" in pressure_window.columns:
+        data["time_text"] = pressure_window["time_text"].astype(str).to_numpy()
+
+    pd.DataFrame(data).to_csv(output, index=False)
+
+
+def _print_pressure_derivative_output_status(
+    *,
+    requested: bool,
+    written: bool,
+    output_path: Path | None,
+) -> None:
+    print(f"pressure_derivative_output_requested={_bool_text(requested)}")
+    print(f"pressure_derivative_output_written={_bool_text(written)}")
+    print(f"pressure_derivative_output_path={output_path if output_path is not None else 'none'}")
+
+
+def _print_pressure_derivative_preview(
+    *,
+    readiness_state: dict[str, object],
+    count: int,
+    output_path: Path | None,
+) -> bool:
     """在 readiness 通过时输出 dP/dG 预览；这里不做 closure。"""
     blockers = readiness_state["blockers"]
+    output_requested = output_path is not None
     print("pressure_derivative_preview_requested=True")
     if blockers:
         print("pressure_derivative_was_computed=False")
         print(f"pressure_derivative_blockers={_format_blockers(blockers)}")
+        _print_pressure_derivative_output_status(
+            requested=output_requested,
+            written=False,
+            output_path=output_path,
+        )
         print("closure_was_computed=False")
         return False
 
     g_time = np.asarray(readiness_state["g_time_array"], dtype=float)
     pressure = np.asarray(readiness_state["pressure_values"], dtype=float)
+    elapsed = readiness_state["pressure_window"]["elapsed_seconds"].to_numpy(dtype=float)
     dP_dG, G_dP_dG = pressure_derivative_against_g_time(g_time, pressure)
     preview_count = min(int(count), len(g_time))
+    delta = elapsed / float(readiness_state["tp_seconds"])
 
     print("pressure_derivative_was_computed=True")
     print("pressure_derivative_scope=falloff_window")
@@ -273,6 +365,36 @@ def _print_pressure_derivative_preview(*, readiness_state: dict[str, object], co
     print(f"pressure_derivative_pressure_mpa={_format_float_list(pressure[:preview_count])}")
     print(f"pressure_derivative_dP_dG_mpa={_format_float_list(dP_dG[:preview_count])}")
     print(f"pressure_derivative_G_dP_dG_mpa={_format_float_list(G_dP_dG[:preview_count])}")
+    _print_derivative_value_summary(
+        "pressure_derivative_dP_dG",
+        derivative_value_summary(dP_dG),
+    )
+    _print_derivative_value_summary(
+        "pressure_derivative_G_dP_dG",
+        derivative_value_summary(G_dP_dG),
+    )
+    pressure_steps = _pressure_step_counts(pressure)
+    print(f"pressure_derivative_pressure_step_positive_count={pressure_steps['positive']}")
+    print(f"pressure_derivative_pressure_step_negative_count={pressure_steps['negative']}")
+    print(f"pressure_derivative_pressure_step_zero_count={pressure_steps['zero']}")
+
+    output_written = False
+    if output_requested:
+        _write_pressure_derivative_csv(
+            path=output_path,
+            readiness_state=readiness_state,
+            delta=delta,
+            g_time=g_time,
+            pressure=pressure,
+            dP_dG=dP_dG,
+            G_dP_dG=G_dP_dG,
+        )
+        output_written = True
+    _print_pressure_derivative_output_status(
+        requested=output_requested,
+        written=output_written,
+        output_path=output_path,
+    )
     print("closure_was_computed=False")
     return True
 
@@ -328,6 +450,10 @@ def _run_window_audit(args: argparse.Namespace) -> int:
             raise ValueError("--pressure-derivative-preview 需要同时传入 --g-time-m")
         if args.valid_falloff_end_elapsed is None:
             raise ValueError("--pressure-derivative-preview 需要同时传入 --valid-falloff-end-elapsed")
+    if args.pressure_derivative_output is not None and not args.pressure_derivative_preview:
+        raise ValueError("--pressure-derivative-output 需要同时传入 --pressure-derivative-preview")
+    if args.pressure_derivative_output is not None and not args.pressure_derivative_output.parent.exists():
+        raise ValueError(f"parent directory does not exist: {args.pressure_derivative_output.parent}")
 
     stages = read_stage_params(args.stage_params)
     stage = _find_stage(stages, stage_number=args.stage, well=args.well)
@@ -431,12 +557,14 @@ def _run_window_audit(args: argparse.Namespace) -> int:
                 stage=stage,
                 elapsed_all=readiness_elapsed,
                 g_time_all=readiness_g_time,
+                tp_seconds=volume_rate_seconds,
             )
             derivative_was_computed = False
             if args.pressure_derivative_preview:
                 derivative_was_computed = _print_pressure_derivative_preview(
                     readiness_state=readiness_state,
                     count=args.pressure_derivative_count,
+                    output_path=args.pressure_derivative_output,
                 )
             _print_derivative_readiness(
                 readiness_state,
