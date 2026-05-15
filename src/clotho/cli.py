@@ -11,7 +11,13 @@ from clotho import __version__
 from clotho.batch import run_derivative_batch
 from clotho.g_function import nolte_g_time
 from clotho.pressure_derivative import derivative_value_summary, pressure_derivative_against_g_time
-from clotho.review import build_derivative_review_table, format_top_review_rows, write_derivative_review_csv
+from clotho.review import (
+    build_derivative_context_table,
+    build_derivative_review_table,
+    format_top_review_rows,
+    write_derivative_context_csv,
+    write_derivative_review_csv,
+)
 from clotho.stage_data import (
     StageInfo,
     add_estimated_bottomhole_pressure,
@@ -174,6 +180,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         type=int,
         help="Print top-N manual triage rows by dP/dG absolute max and positive ratio; does not compute closure.",
+    )
+
+    derivative_context = subparsers.add_parser(
+        "derivative-context",
+        help="Export dP/dG extreme rows and neighboring context for manual review; does not compute closure.",
+    )
+    derivative_context.add_argument("--review", required=True, type=Path, help="derivative-review CSV path.")
+    derivative_context.add_argument("--output", required=True, type=Path, help="Context CSV output path.")
+    derivative_context.add_argument(
+        "--derivative-dir",
+        default=None,
+        type=Path,
+        help="Directory containing per-stage derivative CSV files. Defaults to the review CSV directory.",
+    )
+    derivative_context.add_argument(
+        "--stages",
+        default=None,
+        help="Optional comma-separated stage list, e.g. 5,21,7,8.",
+    )
+    derivative_context.add_argument(
+        "--top-abs-dpdg-per-stage",
+        default=3,
+        type=int,
+        help="Number of largest absolute dP/dG center rows to export per stage.",
+    )
+    derivative_context.add_argument(
+        "--context-radius",
+        default=2,
+        type=int,
+        help="Number of neighboring rows before and after each center row.",
     )
 
     return parser
@@ -485,6 +521,55 @@ def _print_derivative_readiness(state: dict[str, object], *, derivative_was_comp
     print("closure_was_computed=False")
 
 
+def _parse_stage_list(text: str | None) -> list[int] | None:
+    """解析逗号分隔 stage 列表；只用于人工审查筛选。"""
+    if text is None:
+        return None
+    if text.strip() == "":
+        raise ValueError("stages 不能为空")
+    stages: list[int] = []
+    for item in text.split(","):
+        token = item.strip()
+        if not token:
+            raise ValueError("stages 不能包含空项")
+        try:
+            stage = int(token)
+        except ValueError as exc:
+            raise ValueError("stages 必须是逗号分隔的正整数") from exc
+        if stage <= 0:
+            raise ValueError("stages 必须是正整数")
+        stages.append(stage)
+    return stages
+
+
+# 输入：derivative-context 命令参数。输出：退出码；导出极值行上下文，不判断 closure。
+def _run_derivative_context(args: argparse.Namespace) -> int:
+    if args.top_abs_dpdg_per_stage <= 0:
+        raise ValueError("top_abs_dpdg_per_stage 必须 > 0")
+    if args.context_radius < 0:
+        raise ValueError("context_radius 必须 >= 0")
+    stages = _parse_stage_list(args.stages)
+    context = build_derivative_context_table(
+        args.review,
+        derivative_dir=args.derivative_dir,
+        stages=stages,
+        top_abs_dpdg_per_stage=args.top_abs_dpdg_per_stage,
+        context_radius=args.context_radius,
+    )
+    output_path = write_derivative_context_csv(context, args.output)
+    skipped_count = 0
+    if "context_status" in context.columns and "stage" in context.columns:
+        skipped_count = int(context.loc[context["context_status"] != "ok", "stage"].nunique())
+    stage_count = int(context["stage"].nunique()) if "stage" in context.columns and len(context) else 0
+    print(f"derivative_context_review_csv={args.review}")
+    print(f"derivative_context_output={output_path}")
+    print(f"derivative_context_stage_count={stage_count}")
+    print(f"derivative_context_written_rows={len(context)}")
+    print(f"derivative_context_skipped_stage_count={skipped_count}")
+    print("closure_was_computed=False")
+    return 0
+
+
 # 输入：derivative-review 命令参数。输出：退出码；写人工审查清单，不判断 closure。
 def _run_derivative_review(args: argparse.Namespace) -> int:
     if args.print_top_n < 0:
@@ -716,6 +801,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "derivative-review":
         try:
             return _run_derivative_review(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "derivative-context":
+        try:
+            return _run_derivative_context(args)
         except ValueError as exc:
             parser.error(str(exc))
 

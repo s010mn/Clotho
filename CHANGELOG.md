@@ -2433,3 +2433,25 @@ Phase 4K 证明：
 - volume balance；
 - fracture inversion；
 - Excel/PNG reporting。
+
+## Phase 4L：导数极值上下文 CSV 导出
+
+新增 `clotho derivative-context`。
+
+该命令读取 `derivative-review` CSV 和 per-stage derivative CSV，导出每个 stage 中 top absolute `dP/dG` 行及其邻近上下文行，用于人工审查极值发生位置。
+
+能力边界：
+
+- 支持人工指定 `--stages`；
+- 支持 `--top-abs-dpdg-per-stage`；
+- 支持 `--context-radius`；
+- 输出 CSV；
+- 不输出图；
+- 不输出 Excel；
+- 不修改 derivative CSV；
+- 不改变 review priority；
+- 不计算 closure；
+- 不挑闭合压力；
+- 不自动解释导数曲线。
+
+该入口用于人工审查 stage 5 / 21 / 7 / 8 / 10 / 1 / 3 / 29 等 shortlist，在进入任何 closure-candidate audit 前先检查极值行及其前后压力、G-time 和 dP/dG 是否连续。

@@ -226,3 +226,232 @@ def test_derivative_review_negative_print_topn_errors(tmp_path, capsys) -> None:
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "print_top_n" in captured.err
+
+
+def _write_context_review(tmp_path, *, path_name="stage_07_derivative.csv", exists=True):
+    review = tmp_path / "context_review.csv"
+    review.write_text(
+        "stage,pressure_derivative_output_path,derivative_csv_exists,manual_review_priority,manual_review_reasons\n"
+        f"7,{path_name},{exists},medium,large absolute dP/dG\n",
+        encoding="utf-8",
+    )
+    return review
+
+
+def _write_context_derivative_csv(path):
+    path.write_text(
+        "row_number,elapsed_seconds,delta,nolte_g_time,pressure_column,pressure_mpa,"
+        "wellhead_pressure_mpa,dP_dG_mpa,G_dP_dG_mpa\n"
+        "0,0,0,0,wellhead_pressure_mpa,100,100,-1,0\n"
+        "1,1,0.1,0.1,wellhead_pressure_mpa,99,99,-2,-0.2\n"
+        "2,2,0.2,0.2,wellhead_pressure_mpa,80,80,-50,-10\n"
+        "3,3,0.3,0.3,wellhead_pressure_mpa,79,79,-3,-0.9\n"
+        "4,4,0.4,0.4,wellhead_pressure_mpa,78,78,-4,-1.6\n",
+        encoding="utf-8",
+    )
+
+
+def test_derivative_context_exports_center_and_neighbor_rows(tmp_path, capsys) -> None:
+    review = _write_context_review(tmp_path)
+    _write_context_derivative_csv(tmp_path / "stage_07_derivative.csv")
+    output = tmp_path / "context.csv"
+
+    exit_code = main(
+        [
+            "derivative-context",
+            "--review",
+            str(review),
+            "--derivative-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--stages",
+            "7",
+            "--top-abs-dpdg-per-stage",
+            "1",
+            "--context-radius",
+            "1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    context = pd.read_csv(output)
+
+    assert exit_code == 0
+    assert output.exists()
+    assert len(context) == 3
+    assert context["context_offset"].tolist() == [-1, 0, 1]
+    assert context["is_center"].tolist() == [False, True, False]
+    assert context["center_abs_dP_dG_mpa"].tolist() == [50.0, 50.0, 50.0]
+    assert set(context["manual_review_priority"]) == {"medium"}
+    assert set(context["closure_was_computed"]) == {False}
+    assert "derivative_context_written_rows=3" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_derivative_context_top_two_keeps_overlapping_contexts(tmp_path) -> None:
+    review = _write_context_review(tmp_path)
+    _write_context_derivative_csv(tmp_path / "stage_07_derivative.csv")
+    output = tmp_path / "context.csv"
+
+    exit_code = main(
+        [
+            "derivative-context",
+            "--review",
+            str(review),
+            "--derivative-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--top-abs-dpdg-per-stage",
+            "2",
+            "--context-radius",
+            "1",
+        ]
+    )
+
+    context = pd.read_csv(output)
+    assert exit_code == 0
+    assert len(context) == 5
+    assert context["extreme_rank"].tolist() == [1, 1, 1, 2, 2]
+    assert context.loc[context["is_center"] == True, "center_abs_dP_dG_mpa"].tolist() == [50.0, 4.0]
+
+
+def test_derivative_context_missing_derivative_csv_placeholder(tmp_path) -> None:
+    review = _write_context_review(tmp_path, path_name="missing.csv", exists=False)
+    output = tmp_path / "context.csv"
+
+    exit_code = main(["derivative-context", "--review", str(review), "--output", str(output)])
+
+    context = pd.read_csv(output)
+    assert exit_code == 0
+    assert len(context) == 1
+    assert context.iloc[0]["context_status"] == "missing_derivative_csv"
+    assert bool(context.iloc[0]["closure_was_computed"]) is False
+
+
+def test_derivative_context_missing_dpdg_column_placeholder(tmp_path) -> None:
+    review = _write_context_review(tmp_path)
+    (tmp_path / "stage_07_derivative.csv").write_text("row_number,elapsed_seconds\n0,0\n", encoding="utf-8")
+    output = tmp_path / "context.csv"
+
+    exit_code = main(["derivative-context", "--review", str(review), "--output", str(output)])
+
+    context = pd.read_csv(output)
+    assert exit_code == 0
+    assert context.iloc[0]["context_status"] == "missing_dP_dG_mpa"
+
+
+def test_derivative_context_no_finite_dpdg_placeholder(tmp_path) -> None:
+    review = _write_context_review(tmp_path)
+    (tmp_path / "stage_07_derivative.csv").write_text(
+        "row_number,elapsed_seconds,dP_dG_mpa\n0,0,\n1,1,\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "context.csv"
+
+    exit_code = main(["derivative-context", "--review", str(review), "--output", str(output)])
+
+    context = pd.read_csv(output)
+    assert exit_code == 0
+    assert context.iloc[0]["context_status"] == "no_finite_dP_dG_mpa"
+
+
+def test_derivative_context_invalid_top_abs_dpdg_errors(tmp_path, capsys) -> None:
+    review = _write_context_review(tmp_path)
+    output = tmp_path / "context.csv"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "derivative-context",
+                "--review",
+                str(review),
+                "--output",
+                str(output),
+                "--top-abs-dpdg-per-stage",
+                "0",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "top_abs_dpdg_per_stage" in captured.err
+
+
+def test_derivative_context_invalid_radius_errors(tmp_path, capsys) -> None:
+    review = _write_context_review(tmp_path)
+    output = tmp_path / "context.csv"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "derivative-context",
+                "--review",
+                str(review),
+                "--output",
+                str(output),
+                "--context-radius",
+                "-1",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "context_radius" in captured.err
+
+
+def test_derivative_context_invalid_stages_errors(tmp_path, capsys) -> None:
+    review = _write_context_review(tmp_path)
+    output = tmp_path / "context.csv"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["derivative-context", "--review", str(review), "--output", str(output), "--stages", "abc"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "stages" in captured.err
+
+
+def test_derivative_context_missing_output_parent_errors(tmp_path, capsys) -> None:
+    review = _write_context_review(tmp_path)
+    output = tmp_path / "missing" / "context.csv"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["derivative-context", "--review", str(review), "--output", str(output)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "output parent directory does not exist" in captured.err
+
+
+def test_derivative_context_default_stages_processes_all_existing_csvs(tmp_path) -> None:
+    review = tmp_path / "context_review.csv"
+    review.write_text(
+        "stage,pressure_derivative_output_path,derivative_csv_exists,manual_review_priority,manual_review_reasons\n"
+        "7,stage_07_derivative.csv,True,medium,large absolute dP/dG\n"
+        "8,stage_08_derivative.csv,True,medium,large absolute dP/dG\n",
+        encoding="utf-8",
+    )
+    _write_context_derivative_csv(tmp_path / "stage_07_derivative.csv")
+    _write_context_derivative_csv(tmp_path / "stage_08_derivative.csv")
+    output = tmp_path / "context.csv"
+
+    exit_code = main(
+        [
+            "derivative-context",
+            "--review",
+            str(review),
+            "--output",
+            str(output),
+            "--top-abs-dpdg-per-stage",
+            "1",
+            "--context-radius",
+            "0",
+        ]
+    )
+
+    context = pd.read_csv(output)
+    assert exit_code == 0
+    assert sorted(context["stage"].astype(int).tolist()) == [7, 8]
+    assert len(context) == 2

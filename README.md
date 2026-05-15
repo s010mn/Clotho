@@ -187,6 +187,20 @@ uv run python -m clotho derivative-review \
 
 该命令只生成人工审查辅助 CSV，不判断 closure。
 
+`derivative-context` 可以把 dP/dG 极值行及其邻近行导出为 CSV，供人工查看极值发生位置：
+
+```bash
+uv run python -m clotho derivative-context \
+  --review /tmp/gfunction-ref-audit-phase4j/derivative_review_topn_abs10000.csv \
+  --derivative-dir /tmp/gfunction-ref-audit-phase4f/keep_last \
+  --output /tmp/gfunction-ref-audit-phase4l/manual_review_context.csv \
+  --stages 5,21,7,8,10,1,3,29 \
+  --top-abs-dpdg-per-stage 3 \
+  --context-radius 2
+```
+
+`derivative-context` 不做 closure、不挑闭合压力、不自动解释导数曲线、不生成图或 Excel。
+
 ## 数据边界
 
 不要提交：

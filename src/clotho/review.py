@@ -8,6 +8,7 @@ pressure derivative CSV，输出一个面向人工审查的 CSV 表。
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,227 @@ def write_derivative_review_csv(
         raise ValueError(f"output parent directory does not exist: {output_path.parent}")
     review.to_csv(output_path, index=False)
     return output_path
+
+
+def build_derivative_context_table(
+    review_csv: str | Path,
+    *,
+    derivative_dir: str | Path | None = None,
+    stages: Sequence[int] | None = None,
+    top_abs_dpdg_per_stage: int = 3,
+    context_radius: int = 2,
+) -> pd.DataFrame:
+    """导出 dP/dG 极值行及其上下文。
+
+    这是人工审查辅助：只看数值导数 CSV 中极值点附近的行；
+    不做 closure，不挑闭合压力，不解释导数曲线形态，不做 smoothing 或 resampling。
+    """
+    review_path = Path(review_csv)
+    if not review_path.exists():
+        raise ValueError(f"review does not exist: {review_path}")
+    if top_abs_dpdg_per_stage <= 0:
+        raise ValueError("top_abs_dpdg_per_stage must be > 0")
+    if context_radius < 0:
+        raise ValueError("context_radius must be >= 0")
+
+    derivative_root = Path(derivative_dir) if derivative_dir is not None else review_path.parent
+    if not derivative_root.exists() or not derivative_root.is_dir():
+        raise ValueError(f"derivative directory does not exist: {derivative_root}")
+
+    review = pd.read_csv(review_path)
+    selected = review.copy()
+    if stages is not None:
+        wanted = {int(stage) for stage in stages}
+        selected = selected[selected["stage"].astype(int).isin(wanted)]
+
+    rows: list[dict[str, Any]] = []
+    for _, row in selected.iterrows():
+        rows.extend(
+            _context_rows_for_stage(
+                row,
+                derivative_root=derivative_root,
+                top_abs_dpdg_per_stage=int(top_abs_dpdg_per_stage),
+                context_radius=int(context_radius),
+            )
+        )
+    return pd.DataFrame(rows, columns=_DERIVATIVE_CONTEXT_COLUMNS)
+
+
+def write_derivative_context_csv(context: pd.DataFrame, output: str | Path) -> Path:
+    """写出极值上下文 CSV。parent directory 必须已经存在。"""
+    output_path = Path(output)
+    if not output_path.parent.exists():
+        raise ValueError(f"output parent directory does not exist: {output_path.parent}")
+    context.to_csv(output_path, index=False)
+    return output_path
+
+
+_DERIVATIVE_CONTEXT_COLUMNS = [
+    "stage",
+    "manual_review_priority",
+    "manual_review_reasons",
+    "derivative_csv_path",
+    "context_status",
+    "extreme_rank",
+    "center_row_number",
+    "center_abs_dP_dG_mpa",
+    "center_position_index",
+    "center_position_fraction",
+    "center_near_boundary",
+    "context_offset",
+    "is_center",
+    "source_position_index",
+    "source_row_number",
+    "elapsed_seconds",
+    "delta",
+    "nolte_g_time",
+    "pressure_column",
+    "pressure_mpa",
+    "wellhead_pressure_mpa",
+    "estimated_bottomhole_pressure_mpa",
+    "dP_dG_mpa",
+    "G_dP_dG_mpa",
+    "time_text",
+    "closure_was_computed",
+]
+
+
+def _context_rows_for_stage(
+    row: pd.Series,
+    *,
+    derivative_root: Path,
+    top_abs_dpdg_per_stage: int,
+    context_radius: int,
+) -> list[dict[str, Any]]:
+    stage = _maybe_int(row.get("stage"))
+    priority = _text(row.get("manual_review_priority", ""))
+    reasons = _text(row.get("manual_review_reasons", ""))
+    path = _resolve_derivative_path(row.get("pressure_derivative_output_path", ""), derivative_root)
+
+    if path is None or not path.exists():
+        return [_placeholder_context_row(stage, priority, reasons, path, "missing_derivative_csv")]
+
+    derivative = pd.read_csv(path)
+    if "dP_dG_mpa" not in derivative.columns:
+        return [_placeholder_context_row(stage, priority, reasons, path, "missing_dP_dG_mpa")]
+
+    dP_dG = pd.to_numeric(derivative["dP_dG_mpa"], errors="coerce")
+    finite = dP_dG[np.isfinite(dP_dG.to_numpy(dtype=float))]
+    if finite.empty:
+        return [_placeholder_context_row(stage, priority, reasons, path, "no_finite_dP_dG_mpa")]
+
+    abs_dP_dG = dP_dG.abs()
+    center_indices = (
+        abs_dP_dG[np.isfinite(abs_dP_dG.to_numpy(dtype=float))]
+        .sort_values(ascending=False)
+        .head(top_abs_dpdg_per_stage)
+        .index.tolist()
+    )
+
+    output_rows: list[dict[str, Any]] = []
+    csv_row_count = len(derivative)
+    for extreme_rank, center_index in enumerate(center_indices, start=1):
+        center_abs = float(abs_dP_dG.loc[center_index])
+        center_row_number = _source_row_number(derivative, center_index)
+        center_fraction = float("nan") if csv_row_count <= 1 else float(center_index / (csv_row_count - 1))
+        center_near_boundary = bool(
+            center_index < context_radius or center_index > csv_row_count - 1 - context_radius
+        )
+        start = max(0, center_index - context_radius)
+        stop = min(csv_row_count - 1, center_index + context_radius)
+        for source_index in range(start, stop + 1):
+            output_rows.append(
+                _context_data_row(
+                    derivative,
+                    source_index=source_index,
+                    stage=stage,
+                    priority=priority,
+                    reasons=reasons,
+                    path=path,
+                    extreme_rank=extreme_rank,
+                    center_index=center_index,
+                    center_row_number=center_row_number,
+                    center_abs=center_abs,
+                    center_fraction=center_fraction,
+                    center_near_boundary=center_near_boundary,
+                )
+            )
+    return output_rows
+
+
+def _placeholder_context_row(
+    stage: int | float,
+    priority: str,
+    reasons: str,
+    path: Path | None,
+    status: str,
+) -> dict[str, Any]:
+    row = {column: np.nan for column in _DERIVATIVE_CONTEXT_COLUMNS}
+    row.update(
+        {
+            "stage": stage,
+            "manual_review_priority": priority,
+            "manual_review_reasons": reasons,
+            "derivative_csv_path": str(path) if path is not None else "",
+            "context_status": status,
+            "closure_was_computed": False,
+        }
+    )
+    return row
+
+
+def _context_data_row(
+    derivative: pd.DataFrame,
+    *,
+    source_index: int,
+    stage: int | float,
+    priority: str,
+    reasons: str,
+    path: Path,
+    extreme_rank: int,
+    center_index: int,
+    center_row_number: int | float,
+    center_abs: float,
+    center_fraction: float,
+    center_near_boundary: bool,
+) -> dict[str, Any]:
+    source = derivative.iloc[source_index]
+    return {
+        "stage": stage,
+        "manual_review_priority": priority,
+        "manual_review_reasons": reasons,
+        "derivative_csv_path": str(path),
+        "context_status": "ok",
+        "extreme_rank": int(extreme_rank),
+        "center_row_number": center_row_number,
+        "center_abs_dP_dG_mpa": center_abs,
+        "center_position_index": int(center_index),
+        "center_position_fraction": center_fraction,
+        "center_near_boundary": center_near_boundary,
+        "context_offset": int(source_index - center_index),
+        "is_center": bool(source_index == center_index),
+        "source_position_index": int(source_index),
+        "source_row_number": _source_row_number(derivative, source_index),
+        "elapsed_seconds": _number(source.get("elapsed_seconds"), default=np.nan),
+        "delta": _number(source.get("delta"), default=np.nan),
+        "nolte_g_time": _number(source.get("nolte_g_time"), default=np.nan),
+        "pressure_column": _text(source.get("pressure_column", "")),
+        "pressure_mpa": _number(source.get("pressure_mpa"), default=np.nan),
+        "wellhead_pressure_mpa": _number(source.get("wellhead_pressure_mpa"), default=np.nan),
+        "estimated_bottomhole_pressure_mpa": _number(
+            source.get("estimated_bottomhole_pressure_mpa"), default=np.nan
+        ),
+        "dP_dG_mpa": _number(source.get("dP_dG_mpa"), default=np.nan),
+        "G_dP_dG_mpa": _number(source.get("G_dP_dG_mpa"), default=np.nan),
+        "time_text": _text(source.get("time_text", "")),
+        "closure_was_computed": False,
+    }
+
+
+def _source_row_number(derivative: pd.DataFrame, source_index: int) -> int | float:
+    if "row_number" not in derivative.columns:
+        return int(source_index)
+    return _maybe_int(derivative.iloc[source_index].get("row_number"))
 
 
 def format_top_review_rows(
