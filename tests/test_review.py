@@ -321,7 +321,7 @@ def test_derivative_context_missing_derivative_csv_placeholder(tmp_path) -> None
     review = _write_context_review(tmp_path, path_name="missing.csv", exists=False)
     output = tmp_path / "context.csv"
 
-    exit_code = main(["derivative-context", "--review", str(review), "--output", str(output)])
+    exit_code = main(["derivative-context", "--review", str(review), "--output", str(output), "--stages", "7"])
 
     context = pd.read_csv(output)
     assert exit_code == 0
@@ -455,3 +455,112 @@ def test_derivative_context_default_stages_processes_all_existing_csvs(tmp_path)
     assert exit_code == 0
     assert sorted(context["stage"].astype(int).tolist()) == [7, 8]
     assert len(context) == 2
+
+
+def test_derivative_context_default_filters_to_existing_derivative_csv_rows(tmp_path, capsys) -> None:
+    review = tmp_path / "context_review.csv"
+    review.write_text(
+        "stage,pressure_derivative_output_path,derivative_csv_exists,manual_review_priority,manual_review_reasons\n"
+        "7,stage_07_derivative.csv,True,medium,large absolute dP/dG\n"
+        "9,stage_09_derivative.csv,False,high,not ready\n",
+        encoding="utf-8",
+    )
+    _write_context_derivative_csv(tmp_path / "stage_07_derivative.csv")
+    output = tmp_path / "context.csv"
+
+    exit_code = main(
+        [
+            "derivative-context",
+            "--review",
+            str(review),
+            "--derivative-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--top-abs-dpdg-per-stage",
+            "1",
+            "--context-radius",
+            "0",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    context = pd.read_csv(output)
+    assert exit_code == 0
+    assert context["stage"].astype(int).tolist() == [7]
+    assert "derivative_context_stage_count=1" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_derivative_context_explicit_stage_ignores_derivative_csv_exists_filter(tmp_path) -> None:
+    review = tmp_path / "context_review.csv"
+    review.write_text(
+        "stage,pressure_derivative_output_path,derivative_csv_exists,manual_review_priority,manual_review_reasons\n"
+        "9,stage_09_derivative.csv,False,high,not ready\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "context.csv"
+
+    exit_code = main(
+        [
+            "derivative-context",
+            "--review",
+            str(review),
+            "--derivative-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--stages",
+            "9",
+            "--top-abs-dpdg-per-stage",
+            "1",
+            "--context-radius",
+            "0",
+        ]
+    )
+
+    context = pd.read_csv(output)
+    assert exit_code == 0
+    assert context["stage"].astype(int).tolist() == [9]
+    assert context.iloc[0]["context_status"] == "missing_derivative_csv"
+    assert bool(context.iloc[0]["closure_was_computed"]) is False
+
+
+def test_derivative_context_derivative_csv_exists_string_compatibility(tmp_path) -> None:
+    review = tmp_path / "context_review.csv"
+    review.write_text(
+        "stage,pressure_derivative_output_path,derivative_csv_exists,manual_review_priority,manual_review_reasons\n"
+        "1,stage_01_derivative.csv,TRUE,low,ok\n"
+        "2,stage_02_derivative.csv,true,low,ok\n"
+        "3,stage_03_derivative.csv,1,low,ok\n"
+        "4,stage_04_derivative.csv,yes,low,ok\n"
+        "5,stage_05_derivative.csv,Y,low,ok\n"
+        "6,stage_06_derivative.csv,False,high,skip\n"
+        "7,stage_07_derivative.csv,false,high,skip\n"
+        "8,stage_08_derivative.csv,0,high,skip\n"
+        "9,stage_09_derivative.csv,no,high,skip\n",
+        encoding="utf-8",
+    )
+    for stage in [1, 2, 3, 4, 5]:
+        _write_context_derivative_csv(tmp_path / f"stage_{stage:02d}_derivative.csv")
+    output = tmp_path / "context.csv"
+
+    exit_code = main(
+        [
+            "derivative-context",
+            "--review",
+            str(review),
+            "--derivative-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--top-abs-dpdg-per-stage",
+            "1",
+            "--context-radius",
+            "0",
+        ]
+    )
+
+    context = pd.read_csv(output)
+    assert exit_code == 0
+    assert sorted(context["stage"].astype(int).tolist()) == [1, 2, 3, 4, 5]

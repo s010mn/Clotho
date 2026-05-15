@@ -101,6 +101,8 @@ def build_derivative_context_table(
     if stages is not None:
         wanted = {int(stage) for stage in stages}
         selected = selected[selected["stage"].astype(int).isin(wanted)]
+    elif "derivative_csv_exists" in selected.columns:
+        selected = selected[selected["derivative_csv_exists"].map(_truthy_csv_flag)]
 
     rows: list[dict[str, Any]] = []
     for _, row in selected.iterrows():
@@ -481,6 +483,15 @@ def _priority_and_reasons(
         if not reasons:
             reasons.append("no review flags")
     return priority, "; ".join(reasons)
+
+
+def _truthy_csv_flag(value: Any) -> bool:
+    """兼容 CSV 中的 True/true/1/yes/Y；其他值按 False 处理。"""
+    if isinstance(value, bool):
+        return value
+    if pd.isna(value):
+        return False
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
 
 
 def _as_bool(value: Any) -> bool:

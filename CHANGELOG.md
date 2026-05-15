@@ -2455,3 +2455,53 @@ Phase 4K 证明：
 - 不自动解释导数曲线。
 
 该入口用于人工审查 stage 5 / 21 / 7 / 8 / 10 / 1 / 3 / 29 等 shortlist，在进入任何 closure-candidate audit 前先检查极值行及其前后压力、G-time 和 dP/dG 是否连续。
+
+## Phase 4L.1：derivative-context 默认 stage 选择修正
+
+修正 `clotho derivative-context` 的默认 stage 选择行为：
+
+- 不传 `--stages` 时，只处理 review CSV 中 `derivative_csv_exists=True` 的 stage；
+- `derivative_csv_exists` 兼容 `True` / `true` / `TRUE` / `1` / `yes` / `Y`；
+- 显式传入 `--stages` 时，仍按用户指定 stage 处理；
+- 如果显式指定的 stage 缺失 derivative CSV，则输出 `context_status=missing_derivative_csv` placeholder；
+- 不改变 review CSV；
+- 不改变 derivative CSV；
+- 不改变 priority；
+- 不做 closure。
+
+## Phase 4M：导数极值上下文分型审计
+
+本阶段使用 Phase 4L 生成的 context CSV 做本地 row-level 数值上下文审计。
+
+输入 context CSV 位于仓库外：
+
+```text
+/tmp/gfunction-ref-audit-phase4l/manual_review_context_keep_last.csv
+```
+
+输出 summary CSV 位于仓库外：
+
+```text
+/tmp/gfunction-ref-audit-phase4m/context_center_summary_keep_last.csv
+/tmp/gfunction-ref-audit-phase4m/context_stage_summary_keep_last.csv
+```
+
+核心观察：
+
+- stage 5：仍是 duplicate-removal high-risk；top center 发生在停泵后 3--12 s，带 very early extreme、local pressure jump、local sign reversal 标签；
+- stage 21：仍是 duplicate-removal high-risk；2/3 个 top center 靠近起始边界，更像边界导数风险，不能作为 closure 解释；
+- stage 7 / stage 8：仍是 high absolute dP/dG 人工关注对象；top centers 全部位于停泵后 3--14 s，很早期，且有 local pressure jump / sign reversal；
+- stage 10：仍是 no-duplicate reference；其 high abs dP/dG 也发生在停泵后 2--4 s，说明“极早期导数尖峰”可能是普遍数值现象，不应直接解释为 closure；
+- stage 1：small duplicate reference；有 near-start-boundary 和 early extreme；
+- stage 3：positive-ratio reference；top centers 位于 7--17 s，也属于 early / very early context；
+- stage 29：small duplicate / boundary example；top centers 同时包含 near-start-boundary 与 near-end-boundary。
+
+建议人工审查分组：
+
+```text
+mandatory manual plot: 5, 21, 7, 8
+reference / control: 10, 1, 3, 29
+defer unless later needed: other medium duplicate-handling stages
+```
+
+本阶段仍然不是 closure，没有 closure diagnostics、closure pressure picking、ISIP / closure 自动解释、smoothing、resampling、automatic active-bleedoff detection、Carter、PKN、volume balance、fracture inversion、Excel/PNG reporting 或图件输出。
