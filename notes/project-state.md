@@ -1018,3 +1018,379 @@ Phase 3H：设计停泵后有效压力段裁剪与重复时间处理策略
 5. 是否需要独立输出 data-quality audit，而不是直接输出 closure。
 
 这些策略都会改变导数形状和 closure 判断，因此不能默认静默处理。
+
+## Phase 3H-revised：主动放压段候选识别本地审计
+
+本阶段由人类澄清触发：
+
+```text
+许多段最后压力有阶梯下降，那个是主动放压了，那些段不应该再计算进来。
+```
+
+因此，Phase 3H 的口径从“尾部 0 压力质量问题”升级为：
+
+```text
+主动放压段有效性边界问题。
+```
+
+本阶段只做本地策略比较审计，没有修改源码、测试或 CLI，没有提交真实井数据。
+
+本阶段没有实现：
+
+```text
+dP/dG
+G dP/dG
+pressure smoothing
+timestamp 去重
+重复 G-time 聚合
+重采样
+closure diagnostics
+Carter
+PKN
+volume balance
+fracture inversion
+Excel/PNG reporting
+```
+
+参考数据只从仓库外读取：
+
+```text
+/tmp/gfunction-ref-audit-phase3c/Gfunction-wells-current/wells/well4
+```
+
+本地输出只写入：
+
+```text
+/tmp/gfunction-ref-audit-phase3h_bleedoff/
+```
+
+其中包括：
+
+```text
+/tmp/gfunction-ref-audit-phase3h_bleedoff/well4_phase3h_bleedoff_strategy_readiness.csv
+/tmp/gfunction-ref-audit-phase3h_bleedoff/well4_phase3h_bleedoff_candidates.csv
+/tmp/gfunction-ref-audit-phase3h_bleedoff/well4_phase3h_tail_metrics.csv
+/tmp/gfunction-ref-audit-phase3h_bleedoff/stage_XX_tail_excerpt.csv
+```
+
+没有复制以下目录或数据到 Clotho：
+
+```text
+gfunc/
+wells/
+well4/
+data/raw/
+真实井数据
+```
+
+### 有效数据段口径
+
+人类澄清后的有效数据段定义为：
+
+```text
+有效停泵压降段 = 停泵后、主动放压开始前的压力自然降落段。
+```
+
+主动放压段定义为：
+
+```text
+人为打开阀门或放压导致的尾部阶梯式压力快速下降段。
+```
+
+主动放压段不是地层/裂缝自然压降响应，因此不应参与：
+
+```text
+G-function 压力导数
+closure diagnostics
+Carter / PKN / volume balance
+fracture inversion
+```
+
+### 审计策略
+
+本地比较了 5 种候选数据段策略：
+
+```text
+raw:
+  原始 post-shut-in 序列。只作为基线，不作为推荐。
+
+trim_trailing_nonpositive:
+  只裁剪尾部连续 wellhead_pressure_mpa <= 0 行。
+  这是旧压力 0 策略，只作为基线。人类澄清后，它通常不够。
+
+active_bleedoff_drop_ge_0p5:
+  在尾部正压力段中寻找候选主动放压开始点；
+  候选规则为尾部阶梯式下降 step drop >= 0.5 MPa。
+
+active_bleedoff_drop_ge_1p0:
+  同上，但 step drop >= 1.0 MPa。
+
+active_bleedoff_drop_ge_2p0:
+  同上，但 step drop >= 2.0 MPa。
+```
+
+这些阈值只是本地审计候选，不是最终算法。
+
+### Readiness by strategy
+
+本地输出摘要：
+
+```text
+raw:
+ready_stage_count=14
+not_ready_stage_count=16
+ready_stages=3, 4, 6, 7, 8, 12, 15, 20, 22, 23, 25, 26, 28, 30
+not_ready_stages=1, 2, 5, 9, 10, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+blocker_counts=G-time is not strictly increasing:16 | none:14
+
+trim_trailing_nonpositive:
+ready_stage_count=14
+not_ready_stage_count=16
+ready_stages=3, 4, 6, 7, 8, 12, 15, 20, 22, 23, 25, 26, 28, 30
+not_ready_stages=1, 2, 5, 9, 10, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+blocker_counts=G-time is not strictly increasing:16 | none:14
+
+active_bleedoff_drop_ge_0p5:
+ready_stage_count=15
+not_ready_stage_count=15
+ready_stages=3, 4, 6, 7, 8, 10, 12, 15, 20, 22, 23, 25, 26, 28, 30
+not_ready_stages=1, 2, 5, 9, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+candidate_found_stage_count=28
+blocker_counts=G-time is not strictly increasing:15 | none:15
+
+active_bleedoff_drop_ge_1p0:
+ready_stage_count=15
+not_ready_stage_count=15
+ready_stages=3, 4, 6, 7, 8, 10, 12, 15, 20, 22, 23, 25, 26, 28, 30
+not_ready_stages=1, 2, 5, 9, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+candidate_found_stage_count=28
+blocker_counts=G-time is not strictly increasing:15 | none:15
+
+active_bleedoff_drop_ge_2p0:
+ready_stage_count=15
+not_ready_stage_count=15
+ready_stages=3, 4, 6, 7, 8, 10, 12, 15, 20, 22, 23, 25, 26, 28, 30
+not_ready_stages=1, 2, 5, 9, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+candidate_found_stage_count=28
+blocker_counts=G-time is not strictly increasing:15 | none:15
+```
+
+### 尾部非正压力裁剪
+
+30/30 个 stage 都有尾部非正井口压力被裁剪。
+
+各 stage 裁剪行数：
+
+```text
+stage 1: 15
+stage 2: 12
+stage 3: 9
+stage 4: 3
+stage 5: 5
+stage 6: 16
+stage 7: 6
+stage 8: 5
+stage 9: 24
+stage 10: 5
+stage 11: 2
+stage 12: 4
+stage 13: 4
+stage 14: 4
+stage 15: 3
+stage 16: 3
+stage 17: 3
+stage 18: 3
+stage 19: 3
+stage 20: 3
+stage 21: 3
+stage 22: 3
+stage 23: 3
+stage 24: 3
+stage 25: 3
+stage 26: 3
+stage 27: 3
+stage 28: 3
+stage 29: 3
+stage 30: 3
+```
+
+总裁剪尾部非正井口压力行数：
+
+```text
+162
+```
+
+但只裁剪尾部 `wellhead_pressure_mpa <= 0` 并没有改善 readiness：
+
+```text
+raw ready_stage_count=14
+trim_trailing_nonpositive ready_stage_count=14
+```
+
+这说明：只裁剪尾部 0 值不足以处理主动放压段。
+
+### 主动放压候选识别
+
+三个阈值识别到的 stage 数完全一致：
+
+```text
+threshold 0.5 MPa: candidate_found_stage_count=28
+threshold 1.0 MPa: candidate_found_stage_count=28
+threshold 2.0 MPa: candidate_found_stage_count=28
+```
+
+识别到候选主动放压的 stage：
+
+```text
+1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30
+```
+
+没有识别到候选主动放压的 stage：
+
+```text
+4, 25
+```
+
+候选主动放压开始时间中位数：
+
+```text
+median_candidate_start_elapsed=1107.5 s
+median_valid_end_elapsed=1106.5 s
+```
+
+对 28/28 个识别出的候选段：
+
+```text
+candidate_start_elapsed 早于 first_trailing_nonpositive_elapsed
+```
+
+这说明：
+
+- 主动放压通常在井口压力变成 0 之前已经开始；
+- 因此只裁剪尾部 0 值会把主动放压早期的正压力阶梯下降仍然留在数据里。
+
+### 典型 stage 示例
+
+Stage 1：
+
+```text
+first_trailing_nonpositive_elapsed=1209.0
+candidate_start_elapsed=1201.0
+valid_end_elapsed=1200.0
+whp_before_step=63.06
+whp_after_step=45.07
+step_drop_mpa=17.99
+```
+
+解释：
+
+Stage 1 在井口压力变成 0 之前约 8 s 已经出现明显阶梯式主动放压候选。只裁剪尾部 0 值不够。
+
+Stage 2：
+
+```text
+first_trailing_nonpositive_elapsed=979.0
+candidate_start_elapsed=971.0
+valid_end_elapsed=970.0
+whp_before_step=61.74
+whp_after_step=38.69
+step_drop_mpa=23.05
+```
+
+Stage 29：
+
+```text
+first_trailing_nonpositive_elapsed=1109.0
+candidate_start_elapsed=1088.0
+valid_end_elapsed=1087.0
+whp_before_step=65.83
+whp_after_step=59.77
+step_drop_mpa=6.06
+```
+
+解释：
+
+Stage 29 主动放压候选开始时间比尾部 0 开始时间早约 21 s。
+
+Stage 10：
+
+```text
+raw ready=False
+trim_trailing_nonpositive ready=False
+active_bleedoff_drop_ge_0p5 ready=True
+active_bleedoff_drop_ge_1p0 ready=True
+active_bleedoff_drop_ge_2p0 ready=True
+candidate_start_elapsed=1127.0
+rows_removed=36
+```
+
+解释：
+
+Stage 10 是本次 active-bleedoff 候选裁剪唯一让 readiness 从 False 变成 True 的 stage。
+
+### 阈值敏感 stage
+
+候选开始时间对阈值敏感的 stage：
+
+```text
+6, 13, 15, 16, 17, 18, 19, 22, 24, 27
+```
+
+对应 candidate_start_elapsed：
+
+```text
+stage 6:  0.5→1178.0, 1.0→1179.0, 2.0→1179.0
+stage 13: 0.5→1038.0, 1.0→1042.0, 2.0→1085.0
+stage 15: 0.5→1180.0, 1.0→1180.0, 2.0→1181.0
+stage 16: 0.5→1066.0, 1.0→1066.0, 2.0→1067.0
+stage 17: 0.5→906.0,  1.0→909.0,  2.0→933.0
+stage 18: 0.5→1058.0, 1.0→1058.0, 2.0→1059.0
+stage 19: 0.5→1058.0, 1.0→1058.0, 2.0→1059.0
+stage 22: 0.5→1025.0, 1.0→1025.0, 2.0→1026.0
+stage 24: 0.5→1188.0, 1.0→1188.0, 2.0→1189.0
+stage 27: 0.5→1264.0, 1.0→1265.0, 2.0→1265.0
+```
+
+这说明：
+
+主动放压候选识别虽然总体 stage 数稳定，但部分 stage 的候选开始时间对阈值敏感。
+
+### 当前结论
+
+Phase 3H-revised 证明：
+
+1. 人类澄清后的主动放压段确实必须从有效停泵压降段中排除；
+2. 只裁剪尾部井口压力 <= 0 行不够；
+3. 主动放压候选通常早于尾部 0 值出现；
+4. 三个 step-drop 阈值都识别出 28/30 个 stage；
+5. 但 active-bleedoff 候选裁剪只让 stage 10 从 not-ready 变为 ready；
+6. 多数 not-ready stage 仍然因为 G-time 不严格递增而不满足直接导数前置条件；
+7. 当前仍不能直接进入 dP/dG、G dP/dG、closure 或反演。
+
+当前不能把 active_bleedoff 识别逻辑直接写入 Clotho，原因是：
+
+1. 这只是本地候选策略审计；
+2. 主动放压开始时间尚未经过人工确认；
+3. 阈值选择尚未验证；
+4. 部分 stage 对阈值敏感；
+5. stage 4 和 stage 25 没有被当前候选规则识别；
+6. 仍未定义重复 elapsed / G-time 的处理策略；
+7. 仍未定义 smoothing、重采样或导数算法。
+
+### 后续候选方向
+
+下一步不应直接实现 dP/dG。
+
+更合理的下一步是设计一个显式的有效压降段边界策略，例如：
+
+```text
+Phase 3I：valid falloff window 口径设计
+```
+
+候选方向：
+
+1. 人工给定 valid_end_time / bleedoff_start_time；
+2. CLI 只输出候选 bleedoff_start_time，不自动裁剪；
+3. 自动候选必须要求人工确认后才用于导数；
+4. 有效压降段裁剪和重复 elapsed 处理必须分开审计；
+5. 原始数据必须保留，处理后数据只能作为导数输入，不覆盖原始曲线。
