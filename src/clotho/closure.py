@@ -810,6 +810,31 @@ def physical_pkn_volume_balance(
             "pkn_nonstorage_fraction": np.nan,
             "pkn_balance_residual_mean_m3": np.nan,
             "pkn_balance_residual_abs_max_m3": np.nan,
+            "pkn_stable_storage_fraction": np.nan,
+            "pkn_stable_leakoff_fraction": np.nan,
+            "pkn_stable_nonstorage_fraction": np.nan,
+            "pkn_stable_g_min": np.nan,
+            "pkn_stable_g_mean": np.nan,
+            "pkn_stable_g_max": np.nan,
+            "pkn_stable_storage_unit_mean_m2": np.nan,
+            "pkn_stable_preclosure_leakoff_unit_mean_m2": np.nan,
+            "pkn_stable_G_leakoff_unit_mean_m2": np.nan,
+            "pkn_stable_storage_unit_fraction": np.nan,
+            "pkn_stable_G_leakoff_unit_fraction": np.nan,
+            "pkn_shutin_storage_volume_m3": np.nan,
+            "pkn_shutin_leakoff_before_closure_m3": np.nan,
+            "pkn_shutin_fluid_efficiency": np.nan,
+            "pkn_shutin_leakoff_fraction": np.nan,
+            "pkn_shutin_storage_unit_mean_m2": np.nan,
+            "pkn_shutin_preclosure_leakoff_unit_mean_m2": np.nan,
+            "pkn_shutin_storage_unit_fraction": np.nan,
+            "pkn_shutin_preclosure_leakoff_unit_fraction": np.nan,
+            "pkn_C_multiplier_to_20pct_shutin_efficiency": np.nan,
+            "pkn_C_multiplier_to_10pct_shutin_efficiency": np.nan,
+            "pkn_fluid_efficiency_warning": "",
+            "pkn_C_stage_units_assumed": "",
+            "pkn_tp_seconds": np.nan,
+            "pkn_sqrt_tp_seconds": np.nan,
         })
         return out
 
@@ -892,9 +917,15 @@ def physical_pkn_volume_balance(
     all_leakoff_total: list[float] = []
     all_injected_total: list[float] = []
     all_balance_residual: list[float] = []
+    all_storage_unit: list[np.ndarray] = []
+    all_preclosure_leakoff_unit: list[np.ndarray] = []
+    all_G_leakoff_unit: list[np.ndarray] = []
+    all_g_time: list[float] = []
     cluster_audit_rows: list[dict[str, Any]] = []
 
     sqrt_tp = math.sqrt(tp_seconds)
+    storage_unit_factor = math.pi * I_F / E_prime_mpa * H_w_m ** 2  # multiplies P_net_i
+    leakoff_unit_factor = H_p_m * sqrt_tp  # multiplies C_L_i (then K_lp or 4*g)
 
     for idx in stable_indices:
         p_idx = float(pressure_mpa[idx])
@@ -905,14 +936,15 @@ def physical_pkn_volume_balance(
 
         g_val = float(g_time[idx])
         # per-cluster denominator unit_i (Phase 5D.4 direct formula):
-        # unit_i = K_lp * C_L_i * H_p * sqrt(tp) + 4 * C_L_i * H_p * sqrt(tp) * g
-        #          + (pi * I_F / E') * H_w^2 * P_net_i
+        # unit_i = storage_unit_i + preclosure_leakoff_unit_i + G_leakoff_unit_i
+        # storage_unit_i           = (pi * I_F / E') * H_w^2 * P_net_i
+        # preclosure_leakoff_unit_i = K_lp * C_L_i * H_p * sqrt(tp)
+        # G_leakoff_unit_i          = 4 * C_L_i * H_p * sqrt(tp) * g
         # L_i = eta_i * V_inj / unit_i (no global Sum(unit_j * eta_j))
-        unit = np.array([
-            math.pi * I_F / E_prime_mpa * H_w_m ** 2 * P_net_arr[i]
-            + C_arr[i] * H_p_m * sqrt_tp * (k_lp_val + 4.0 * g_val)
-            for i in range(n_clusters)
-        ])
+        storage_unit_arr = storage_unit_factor * P_net_arr
+        preclosure_leakoff_unit_arr = k_lp_val * C_arr * leakoff_unit_factor
+        G_leakoff_unit_arr = 4.0 * C_arr * leakoff_unit_factor * g_val
+        unit = storage_unit_arr + preclosure_leakoff_unit_arr + G_leakoff_unit_arr
 
         if np.all(unit <= 0):
             continue
@@ -932,8 +964,8 @@ def physical_pkn_volume_balance(
         # leakoff_before_closure_i = L_i * K_lp * C_L_i * H_p * sqrt(tp)
         # leakoff_G_i              = L_i * 4 * C_L_i * H_p * sqrt(tp) * g
         # injected_i               = eta_i * V_inj
-        leakoff_before_arr = L_arr * k_lp_val * C_arr * H_p_m * sqrt_tp
-        leakoff_G_arr = L_arr * 4.0 * C_arr * H_p_m * sqrt_tp * g_val
+        leakoff_before_arr = L_arr * preclosure_leakoff_unit_arr
+        leakoff_G_arr = L_arr * G_leakoff_unit_arr
         leakoff_total_arr = leakoff_before_arr + leakoff_G_arr
         injected_arr = eta * effective_injected_volume_m3
         balance_residual_arr = injected_arr - V_f_arr - leakoff_total_arr
@@ -967,6 +999,10 @@ def physical_pkn_volume_balance(
         all_leakoff_total.append(float(np.sum(leakoff_total_arr)))
         all_injected_total.append(float(np.sum(injected_arr)))
         all_balance_residual.append(float(np.sum(balance_residual_arr)))
+        all_storage_unit.append(storage_unit_arr.copy())
+        all_preclosure_leakoff_unit.append(preclosure_leakoff_unit_arr.copy())
+        all_G_leakoff_unit.append(G_leakoff_unit_arr.copy())
+        all_g_time.append(g_val)
 
     if len(all_V_total) == 0:
         out = _fail("net_pressure_nonpositive")
@@ -985,10 +1021,119 @@ def physical_pkn_volume_balance(
     Pnet_all = np.concatenate(all_Pnet)
     leakoff_total_rows = np.array(all_leakoff_total)
     balance_residual_rows = np.array(all_balance_residual)
+    storage_unit_all = np.concatenate(all_storage_unit)
+    preclosure_leakoff_unit_all = np.concatenate(all_preclosure_leakoff_unit)
+    G_leakoff_unit_all = np.concatenate(all_G_leakoff_unit)
+    g_time_rows = np.array(all_g_time)
 
     storage_mean = float(np.mean(V_arr))
     leakoff_mean = float(np.mean(leakoff_total_rows))
     nonstorage_mean = effective_injected_volume_m3 - storage_mean
+
+    # Stable-row unit-component audit (means across cluster x stable-row points)
+    stable_storage_unit_mean = float(np.mean(storage_unit_all))
+    stable_preclosure_leakoff_unit_mean = float(np.mean(preclosure_leakoff_unit_all))
+    stable_G_leakoff_unit_mean = float(np.mean(G_leakoff_unit_all))
+    stable_total_unit_mean = (
+        stable_storage_unit_mean
+        + stable_preclosure_leakoff_unit_mean
+        + stable_G_leakoff_unit_mean
+    )
+    if stable_total_unit_mean > 0:
+        stable_storage_unit_fraction = stable_storage_unit_mean / stable_total_unit_mean
+        stable_G_leakoff_unit_fraction = stable_G_leakoff_unit_mean / stable_total_unit_mean
+    else:
+        stable_storage_unit_fraction = np.nan
+        stable_G_leakoff_unit_fraction = np.nan
+
+    # Phase 5D.6 shut-in fluid efficiency:
+    # Re-evaluate the per-cluster direct formula at g=0 using shut-in pressure
+    # (pressure_mpa[0] is the first row of the readiness window, i.e. the shut-in pressure).
+    # shut-in efficiency must NOT include the G leakoff term.
+    p_shutin = float(pressure_mpa[0])
+    P_net_shutin_arr = xi * max(p_shutin - perf - sigma, 0.0)
+    if np.any(P_net_shutin_arr > 0):
+        storage_unit_shutin_arr = storage_unit_factor * P_net_shutin_arr
+        preclosure_leakoff_unit_shutin_arr = k_lp_val * C_arr * leakoff_unit_factor
+        unit_shutin_arr = storage_unit_shutin_arr + preclosure_leakoff_unit_shutin_arr
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            L_shutin_arr = np.where(
+                unit_shutin_arr > 0,
+                effective_injected_volume_m3 * eta / unit_shutin_arr,
+                0.0,
+            )
+        storage_i_shutin_arr = (
+            storage_unit_factor * L_shutin_arr * P_net_shutin_arr
+        )
+        leakoff_before_i_shutin_arr = L_shutin_arr * preclosure_leakoff_unit_shutin_arr
+
+        shutin_storage_total = float(np.sum(storage_i_shutin_arr))
+        shutin_leakoff_before_total = float(np.sum(leakoff_before_i_shutin_arr))
+
+        shutin_storage_unit_mean = float(np.mean(storage_unit_shutin_arr))
+        shutin_preclosure_leakoff_unit_mean = float(np.mean(preclosure_leakoff_unit_shutin_arr))
+        shutin_total_unit_mean = (
+            shutin_storage_unit_mean + shutin_preclosure_leakoff_unit_mean
+        )
+        if shutin_total_unit_mean > 0:
+            shutin_storage_unit_fraction = (
+                shutin_storage_unit_mean / shutin_total_unit_mean
+            )
+            shutin_preclosure_leakoff_unit_fraction = (
+                shutin_preclosure_leakoff_unit_mean / shutin_total_unit_mean
+            )
+        else:
+            shutin_storage_unit_fraction = np.nan
+            shutin_preclosure_leakoff_unit_fraction = np.nan
+
+        shutin_fluid_efficiency = (
+            shutin_storage_total / effective_injected_volume_m3
+        )
+        shutin_leakoff_fraction = (
+            shutin_leakoff_before_total / effective_injected_volume_m3
+        )
+    else:
+        shutin_storage_total = np.nan
+        shutin_leakoff_before_total = np.nan
+        shutin_storage_unit_mean = np.nan
+        shutin_preclosure_leakoff_unit_mean = np.nan
+        shutin_storage_unit_fraction = np.nan
+        shutin_preclosure_leakoff_unit_fraction = np.nan
+        shutin_fluid_efficiency = np.nan
+        shutin_leakoff_fraction = np.nan
+
+    # Phase 5D.6 C-multiplier diagnostic:
+    # If target_eff = storage_unit / (storage_unit + leakoff_unit_target),
+    # then leakoff_unit_target = storage_unit * (1/target_eff - 1),
+    # and C_multiplier = leakoff_unit_target / current_leakoff_unit (since leakoff_unit_i ∝ C_stage).
+    def _c_mult(target: float) -> float:
+        if not (
+            np.isfinite(shutin_storage_unit_mean)
+            and np.isfinite(shutin_preclosure_leakoff_unit_mean)
+            and shutin_preclosure_leakoff_unit_mean > 0
+            and 0 < target < 1
+        ):
+            return float("nan")
+        leakoff_unit_target = shutin_storage_unit_mean * (1.0 / target - 1.0)
+        return float(leakoff_unit_target / shutin_preclosure_leakoff_unit_mean)
+
+    c_mult_20 = _c_mult(0.20)
+    c_mult_10 = _c_mult(0.10)
+
+    # Phase 5D.6 efficiency warning (sanity check label, not a physical conclusion)
+    if not np.isfinite(shutin_fluid_efficiency):
+        efficiency_warning = "shutin_efficiency_not_finite"
+    elif shutin_fluid_efficiency < 0.05:
+        efficiency_warning = "very_low_shutin_fluid_efficiency_check_C_units_or_stable_slope"
+    elif shutin_fluid_efficiency < 0.10:
+        efficiency_warning = "low_shutin_fluid_efficiency_check_C_or_leakoff_terms"
+    elif shutin_fluid_efficiency < 0.20:
+        efficiency_warning = "below_20pct_reference_check_local_assumptions"
+    else:
+        efficiency_warning = "no_low_efficiency_warning"
+
+    stable_fraction_val = storage_mean / effective_injected_volume_m3
 
     result = dict(base)
     result.update({
@@ -1013,6 +1158,7 @@ def physical_pkn_volume_balance(
         "pkn_C_status": "ok",
         "pkn_C_coupling_method": C_coupling,
         "pkn_C_stage": float(C_stage),
+        "pkn_C_stage_units_assumed": "m_per_sqrt_second",
         "pkn_C_min": float(np.min(C_arr)),
         "pkn_C_max": float(np.max(C_arr)),
         "pkn_C_mean": float(np.mean(C_arr)),
@@ -1028,11 +1174,45 @@ def physical_pkn_volume_balance(
         "pkn_leakoff_volume_m3": leakoff_mean,
         "pkn_leakoff_volume_std_m3": float(np.std(leakoff_total_rows)) if len(leakoff_total_rows) > 1 else 0.0,
         "pkn_nonstorage_volume_m3": float(nonstorage_mean),
-        "pkn_storage_fraction": float(storage_mean / effective_injected_volume_m3),
+        "pkn_storage_fraction": float(stable_fraction_val),
+        "pkn_stable_storage_fraction": float(stable_fraction_val),
+        "pkn_stable_leakoff_fraction": float(leakoff_mean / effective_injected_volume_m3),
+        "pkn_stable_nonstorage_fraction": float(nonstorage_mean / effective_injected_volume_m3),
         "pkn_leakoff_fraction": float(leakoff_mean / effective_injected_volume_m3),
         "pkn_nonstorage_fraction": float(nonstorage_mean / effective_injected_volume_m3),
         "pkn_balance_residual_mean_m3": float(np.mean(balance_residual_rows)),
         "pkn_balance_residual_abs_max_m3": float(np.max(np.abs(balance_residual_rows))),
+        "pkn_stable_g_min": float(np.min(g_time_rows)),
+        "pkn_stable_g_mean": float(np.mean(g_time_rows)),
+        "pkn_stable_g_max": float(np.max(g_time_rows)),
+        "pkn_stable_storage_unit_mean_m2": stable_storage_unit_mean,
+        "pkn_stable_preclosure_leakoff_unit_mean_m2": stable_preclosure_leakoff_unit_mean,
+        "pkn_stable_G_leakoff_unit_mean_m2": stable_G_leakoff_unit_mean,
+        "pkn_stable_storage_unit_fraction": float(stable_storage_unit_fraction)
+            if np.isfinite(stable_storage_unit_fraction) else np.nan,
+        "pkn_stable_G_leakoff_unit_fraction": float(stable_G_leakoff_unit_fraction)
+            if np.isfinite(stable_G_leakoff_unit_fraction) else np.nan,
+        "pkn_shutin_storage_volume_m3": float(shutin_storage_total)
+            if np.isfinite(shutin_storage_total) else np.nan,
+        "pkn_shutin_leakoff_before_closure_m3": float(shutin_leakoff_before_total)
+            if np.isfinite(shutin_leakoff_before_total) else np.nan,
+        "pkn_shutin_fluid_efficiency": float(shutin_fluid_efficiency)
+            if np.isfinite(shutin_fluid_efficiency) else np.nan,
+        "pkn_shutin_leakoff_fraction": float(shutin_leakoff_fraction)
+            if np.isfinite(shutin_leakoff_fraction) else np.nan,
+        "pkn_shutin_storage_unit_mean_m2": float(shutin_storage_unit_mean)
+            if np.isfinite(shutin_storage_unit_mean) else np.nan,
+        "pkn_shutin_preclosure_leakoff_unit_mean_m2": float(shutin_preclosure_leakoff_unit_mean)
+            if np.isfinite(shutin_preclosure_leakoff_unit_mean) else np.nan,
+        "pkn_shutin_storage_unit_fraction": float(shutin_storage_unit_fraction)
+            if np.isfinite(shutin_storage_unit_fraction) else np.nan,
+        "pkn_shutin_preclosure_leakoff_unit_fraction": float(shutin_preclosure_leakoff_unit_fraction)
+            if np.isfinite(shutin_preclosure_leakoff_unit_fraction) else np.nan,
+        "pkn_C_multiplier_to_20pct_shutin_efficiency": c_mult_20,
+        "pkn_C_multiplier_to_10pct_shutin_efficiency": c_mult_10,
+        "pkn_fluid_efficiency_warning": efficiency_warning,
+        "pkn_tp_seconds": float(tp_seconds),
+        "pkn_sqrt_tp_seconds": float(sqrt_tp),
     })
     result.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
     result.update(seg)
@@ -1058,6 +1238,10 @@ def build_observation_correlation_table(
         "pkn_storage_fraction",
         "pkn_leakoff_fraction",
         "pkn_nonstorage_fraction",
+        "pkn_stable_storage_fraction",
+        "pkn_shutin_fluid_efficiency",
+        "pkn_shutin_storage_volume_m3",
+        "pkn_shutin_leakoff_before_closure_m3",
         "pkn_C_stage",
         "pkn_C_mean",
         "legacy_mvp_pkn_fracture_volume_m3",
@@ -1474,6 +1658,31 @@ def _empty_pkn_fields() -> dict[str, Any]:
         "pkn_nonstorage_fraction": np.nan,
         "pkn_balance_residual_mean_m3": np.nan,
         "pkn_balance_residual_abs_max_m3": np.nan,
+        "pkn_stable_storage_fraction": np.nan,
+        "pkn_stable_leakoff_fraction": np.nan,
+        "pkn_stable_nonstorage_fraction": np.nan,
+        "pkn_stable_g_min": np.nan,
+        "pkn_stable_g_mean": np.nan,
+        "pkn_stable_g_max": np.nan,
+        "pkn_stable_storage_unit_mean_m2": np.nan,
+        "pkn_stable_preclosure_leakoff_unit_mean_m2": np.nan,
+        "pkn_stable_G_leakoff_unit_mean_m2": np.nan,
+        "pkn_stable_storage_unit_fraction": np.nan,
+        "pkn_stable_G_leakoff_unit_fraction": np.nan,
+        "pkn_shutin_storage_volume_m3": np.nan,
+        "pkn_shutin_leakoff_before_closure_m3": np.nan,
+        "pkn_shutin_fluid_efficiency": np.nan,
+        "pkn_shutin_leakoff_fraction": np.nan,
+        "pkn_shutin_storage_unit_mean_m2": np.nan,
+        "pkn_shutin_preclosure_leakoff_unit_mean_m2": np.nan,
+        "pkn_shutin_storage_unit_fraction": np.nan,
+        "pkn_shutin_preclosure_leakoff_unit_fraction": np.nan,
+        "pkn_C_multiplier_to_20pct_shutin_efficiency": np.nan,
+        "pkn_C_multiplier_to_10pct_shutin_efficiency": np.nan,
+        "pkn_fluid_efficiency_warning": "",
+        "pkn_C_stage_units_assumed": "",
+        "pkn_tp_seconds": np.nan,
+        "pkn_sqrt_tp_seconds": np.nan,
         "legacy_mvp_pkn_fracture_volume_m3": np.nan,
         "legacy_mvp_pkn_half_length_mean_m": np.nan,
         "legacy_mvp_pkn_volume_status": "not_computed",

@@ -3075,3 +3075,78 @@ stage 1 storage 数值对比：
 - closure outputs remain candidates, not final interpretation；
 - 不提交 PNG / CSV / 真实数据；
 - 不 push master。
+
+## Phase 5D.6 — PKN fluid-efficiency sanity audit
+
+Branch: `sprint`
+
+核心变更：
+
+- 明确区分 *stable-row storage fraction* 和 *shut-in fluid efficiency*；之前 Phase 5D.5 报告的 `pkn_storage_fraction` 是前者，**不**等于经典压裂液效率；
+- 新增 stage summary 字段：
+  - `pkn_shutin_storage_volume_m3` / `pkn_shutin_leakoff_before_closure_m3`
+  - `pkn_shutin_fluid_efficiency` / `pkn_shutin_leakoff_fraction`
+  - `pkn_shutin_storage_unit_mean_m2` / `pkn_shutin_preclosure_leakoff_unit_mean_m2`
+  - `pkn_shutin_storage_unit_fraction` / `pkn_shutin_preclosure_leakoff_unit_fraction`
+  - `pkn_stable_storage_fraction` / `pkn_stable_leakoff_fraction` / `pkn_stable_nonstorage_fraction`
+  - `pkn_stable_g_min` / `pkn_stable_g_mean` / `pkn_stable_g_max`
+  - `pkn_stable_storage_unit_mean_m2` / `pkn_stable_preclosure_leakoff_unit_mean_m2` / `pkn_stable_G_leakoff_unit_mean_m2`
+  - `pkn_stable_storage_unit_fraction` / `pkn_stable_G_leakoff_unit_fraction`
+  - `pkn_C_multiplier_to_20pct_shutin_efficiency` / `pkn_C_multiplier_to_10pct_shutin_efficiency`
+  - `pkn_fluid_efficiency_warning`
+  - `pkn_C_stage_units_assumed` / `pkn_tp_seconds` / `pkn_sqrt_tp_seconds`；
+- shut-in efficiency 定义：g=0，pressure=shut-in pressure，unit_i 不含 G·dP/dG 漏失项；用同一套 direct per-cluster 公式重新计算 L_i_shutin、storage_i_shutin；
+- C-multiplier 诊断（uniform-xi 近似）：`leakoff_unit_target = storage_unit · (1/target − 1)`，`multiplier = leakoff_unit_target / current_preclosure_leakoff_unit`；不自动修改 C；
+- efficiency warning thresholds：<5% / <10% / <20% / ≥20%；
+- correlation table 新增 metrics：`pkn_stable_storage_fraction`, `pkn_shutin_fluid_efficiency`, `pkn_shutin_storage_volume_m3`, `pkn_shutin_leakoff_before_closure_m3`；
+- 新增 5 tests（TestFluidEfficiencyAudit）：
+  - shut-in efficiency 不含 G 项（alpha=0 uniform xi 下精确验证）；
+  - 低效率 warning label；
+  - C multiplier diagnostic 数值反演（验证 mean-of-units 形式）；
+  - CLI smoke 字段存在；
+  - g>0 时 stable_storage_fraction < shutin_fluid_efficiency；
+- 175 tests pass（170 + 5 new）。
+
+关键发现（well4, 30 stages, Phase 4K manifest, stage-constant C baseline, n=28）：
+
+| 量 | min | median | max |
+|----|----:|------:|----:|
+| pkn_shutin_fluid_efficiency | 0.005 | **0.082** | 0.256 |
+| pkn_stable_storage_fraction | 0.004 | 0.063 | 0.235 |
+| pkn_C_multiplier_to_20pct | 0.018 | 0.282 | 1.092 |
+| pkn_C_multiplier_to_10pct | 0.040 | 0.635 | 2.458 |
+| stable_dP_dG_slope_mpa | -930.2 | -34.9 | -8.1 |
+| pkn_C_stage | 1.6e-4 | 7.0e-4 | 1.9e-2 |
+
+warning counts:
+- very_low (<5%): 3 stages
+- low (5%–10%): 16 stages
+- below_20pct (10%–20%): 8 stages
+- no_low_efficiency (≥20%): 1 stage
+- NaN (placeholders): 2
+
+shut-in efficiency 计数:
+- < 5%: 3 / 28
+- < 10%: 19 / 28
+- < 20%: 27 / 28
+- ≥ 20%: 1 / 28
+
+**关键发现**：
+
+- shut-in efficiency 也偏低，median ~8%，27/28 段 < 20%；
+- G 项对 shut-in vs stable 差异贡献有限（stable_G_leakoff_unit_fraction median ~4%）；
+- 主导项是 preclosure leakoff（shut-in unit 中 ~93–99%），由 C_stage 驱动；
+- C_multiplier_to_20pct median ~0.28：当前 C_stage 大致需要缩小到原来的 1/3.5 才能让 shut-in efficiency 达到 20%；
+- 这强烈暗示 **C_stage 偏大**（candidate 解释，未确认）：可能由 stable segment 选段（stage 5 slope=-930 极端）、H_p / fleak 定义、tp/sqrt(tp) 单位、I_F 在 C 公式里的整体口径造成；
+- **不通过调 C 强行达到 20%**；Phase 5D.6 只输出 sanity audit，不修改模型。
+
+边界（5D.6）：
+
+- I_F 不变（仍为 0.722464726919）；
+- H_w 不变（50 m fixed）；
+- direct per-cluster denominator 不变；
+- C coupling baseline 仍为 stage-constant；
+- closure outputs remain candidates, not final interpretation；
+- shut-in efficiency 偏低作为 blocker 列入 TODO，待人工复核；
+- 不提交 PNG / CSV / 真实数据；
+- 不 push master。

@@ -177,3 +177,30 @@ Phase 5D.5 发现 `pkn_leakoff_volume_m3` / `pkn_nonstorage_volume_m3` 与电磁
 - 或用 leakoff_fraction (per-volume) 替代绝对体积，剔除规模效应；
 - pkn_leakoff_fraction 当前已实现，但 Pearson 较弱（vs micro +0.233, vs EM +0.087）；
 - 需要更高维分析（partial correlation 或 multiple regression）。
+
+## 26. shut-in fluid efficiency 偏低（Phase 5D.6 blocker）
+
+Phase 5D.6 输出 well4 shut-in fluid efficiency median ~8%，27/28 段 < 20%，19/28 < 10%。
+这显著低于"压裂液效率约 20%"的工程经验值。
+G 项不是主因（stable_G_leakoff_unit_fraction median ~4%），主导项是 preclosure leakoff（unit 中 ~93–99%），由 C_stage 驱动。
+pkn_C_multiplier_to_20pct median ~0.28，提示当前 C_stage 大致需要缩小到原来的 1/3.5 才能达到 20%。
+
+候选解释（全部是 sanity check，不是物理结论）：
+
+- stable segment 选段过早或过晚，导致 dP/dG slope 过大；
+  - stage 5 slope=-930 MPa, r²=0.81 是极端例子，可能采到 early transient；
+  - 需要人工 plot review 复核选段；
+- H_p = fleak·H_w = 25 m 偏小，导致 C 公式 `C = -(I_F·H_w²)/(E'·H_p·√tp)·dP/dG` 把 |dP/dG| 放大；
+- tp 或 sqrt(tp) 单位（rate-time-unit=minute, tp 应为 seconds）需要复核；
+- I_F 在 C 公式里整体口径需要复核；
+- Carter leakoff 模型与从 stable slope 反推的 C 在物理上不一致；
+- 有效液量 (V_inj_eff) 包含井筒存储 / 射孔摩阻校正，但当前 well4 smoke 使用 0 值，可能高估有效液量。
+
+需要做的事：
+
+- 人工 plot review G·dP/dG vs G 与 dP/dG vs G，重新选 stable segment；
+- 复核 H_p / fleak 物理来源（fleak=0.5 是 default fallback，stage_params 没给真实 fleak）；
+- 复核 tp 单位（rate_time_unit=minute → tp seconds 路径）；
+- 复核 I_F=0.722464726919 的来源积分 (TODO #19)；
+- 在确认所有 sanity check 后，决定是否需要重新定义 C_stage（如改用 calibrated Carter C 代替 stable slope）；
+- **不通过调 C 强行让 shut-in efficiency 达到 20%**。

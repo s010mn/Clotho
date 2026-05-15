@@ -165,6 +165,73 @@ pkn_nonstorage_fraction       = pkn_nonstorage_volume_m3 / V_inj_eff
 
 按 L_i = η_i · V_inj / unit_i 的定义，`balance_residual_i ≡ 0`（单位测试断言）。
 
+### 4.6 Phase 5D.6：fluid-efficiency sanity audit
+
+Phase 5D.5 看到 `pkn_storage_fraction <10%` 让人怀疑 G-time 稳定段剩余储集比例被误当作了停泵时压裂液效率。Phase 5D.6 把这两个量明确区分：
+
+- **stable-row storage fraction** (`pkn_stable_storage_fraction`): 在 stable rows 上（g>0），单元 unit_i 包含 G·dP/dG 漏失项 `4·C·H_p·√tp·g`。这就是 Phase 5D.5 输出的 `pkn_storage_fraction`。
+- **shut-in fluid efficiency** (`pkn_shutin_fluid_efficiency`): 在 g=0、压力 = shut-in pressure 的条件下，重新用同一套 direct per-cluster 公式计算，**unit_i 不含 G 项**。这才是和经典“压裂液效率约 20%”可对比的量。
+
+公式：
+
+```
+unit_i_shutin = (π·I_F/E') · H_w² · P_net_i_shutin
+              + K_lp · C_L_i · H_p · √tp        # 不含 G 项
+
+L_i_shutin = η_i · V_inj / unit_i_shutin
+storage_i_shutin = (π·I_F/E') · L_i_shutin · H_w² · P_net_i_shutin
+leakoff_before_i_shutin = L_i_shutin · K_lp · C_L_i · H_p · √tp
+
+pkn_shutin_storage_volume_m3 = Σ_i storage_i_shutin
+pkn_shutin_fluid_efficiency = pkn_shutin_storage_volume_m3 / V_inj_eff
+```
+
+诊断字段：
+
+- `pkn_shutin_storage_unit_mean_m2` / `pkn_shutin_preclosure_leakoff_unit_mean_m2`：cluster 平均的两个 unit 分量；
+- `pkn_shutin_storage_unit_fraction` / `pkn_shutin_preclosure_leakoff_unit_fraction`：两个 unit 分量在 shut-in unit 里的占比；
+- `pkn_stable_storage_unit_fraction` / `pkn_stable_G_leakoff_unit_fraction`：stable rows 上 unit 三分量的占比；
+- `pkn_C_multiplier_to_20pct_shutin_efficiency` / `pkn_C_multiplier_to_10pct_shutin_efficiency`：如果 C_stage 按这个倍数缩放，shut-in efficiency 大致能达到 20%/10%（uniform-xi 近似，仅诊断用）；
+- `pkn_fluid_efficiency_warning`：sanity check label，不是物理结论。
+
+### 4.7 well4 efficiency audit（n=28）
+
+stage-constant C baseline 结果：
+
+| 量 | min | median | max |
+|----|----:|------:|----:|
+| pkn_shutin_fluid_efficiency | 0.005 | **0.082** | 0.256 |
+| pkn_stable_storage_fraction | 0.004 | 0.063 | 0.235 |
+| pkn_C_multiplier_to_20pct | 0.018 | **0.282** | 1.092 |
+| pkn_C_multiplier_to_10pct | 0.040 | 0.635 | 2.458 |
+| pkn_stable_g_mean | 0.008 | 0.064 | 0.104 |
+| stable_dP_dG_slope_mpa | -930.2 | -34.9 | -8.1 |
+| pkn_C_stage | 1.6e-4 | 7.0e-4 | 1.9e-2 |
+
+warning 计数：
+
+| warning | stages |
+|---------|------:|
+| very_low_shutin_fluid_efficiency_check_C_units_or_stable_slope (<5%) | 3 |
+| low_shutin_fluid_efficiency_check_C_or_leakoff_terms (5%–10%) | 16 |
+| below_20pct_reference_check_local_assumptions (10%–20%) | 8 |
+| no_low_efficiency_warning (≥20%) | 1 |
+
+**关键观察**：
+
+- shut-in efficiency 也很低，median ~ 8%。即使排除 G 项，shut-in storage fraction 仍然远低于"压裂液效率约 20%"的经验值；
+- 27/28 段 shut-in efficiency < 20%；19/28 < 10%；3/28 < 5%；
+- G 项对 shut-in vs stable 差异贡献有限（stable_G_leakoff_unit_fraction median ~ 4%）；主导项是 preclosure leakoff（shut-in 中占 unit 的 ~93–99%）；
+- pkn_C_multiplier_to_20pct median ~0.28：当前 C_stage 大致需要缩小到原来的 1/3.5 才能让 shut-in efficiency 达到 20%；
+- 这强烈暗示 **C_stage 偏大**，可能由以下原因之一造成（未确认，全部是 sanity check）：
+  - stable dP/dG slope 抽样选了陡降早期段（stage 5 slope=-930 MPa 是极端例子，r²=0.81，可能采到 transient）；
+  - C 公式里 H_p = fleak·H_w = 0.5·50 = 25 m 过小，导致 C 推回时被放大；
+  - tp 或 sqrt(tp) 单位混用（rate-time-unit=minute, tp 应为 seconds，需要复核）；
+  - I_F 在 C 公式里 (I_F·H_w²)/(E'·H_p·√tp) 的整体口径需要复核；
+  - Carter leakoff 模型与从 stable slope 反推的 C 在物理上不一致。
+
+**这些都是 sanity check 候选解释，不是物理结论。** 不通过强行调 C 去达到 20%。需要人工复核 C_stage、stable segment、单位、H_p 定义。
+
 闭合候选覆盖：
 
 - physical PKN 使用 selected closure candidate（Barree 优先，McClure 备选）；
@@ -266,8 +333,10 @@ stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0
 2. 30 段 full-well output，28 段 computed（27 Barree + 1 McClure），2 段 placeholder（stage 4/25 缺有效 falloff）；
 3. Phase 5D.5 新增 C-coupling 控制：stage-constant 是 baseline，shadow-scaled 仅作为 coupled-assumption control；
 4. physical PKN **storage** 体积与微地震波及体积仍呈负相关（Pearson -0.232 stage-constant / -0.259 shadow-scaled, n=28）；
-5. 新发现 leakoff/nonstorage proxy 与电磁面积呈强正相关（Pearson +0.594），但因 storage_fraction 太小（<10%），nonstorage ≈ effective_injected，正相关可能更多来自注入规模而非反演本身；
-6. 下一步应人工复核闭合候选、稳定段 C、段型分类、有效液量标定，并尝试 Carter leakoff calibration 区分纯 leakoff 与注入规模效应。
+5. Phase 5D.6 增加 **fluid-efficiency sanity audit**：把 stable-row storage fraction 与 shut-in fluid efficiency 明确区分；
+6. **shut-in efficiency 仍然偏低**（median 8%，27/28 < 20%，19/28 < 10%），暂作 blocker，不能直接当成物理结论；可能由 C_stage 偏大、stable segment、H_p 定义或单位口径造成，需要人工复核；
+7. 新发现 leakoff/nonstorage proxy 与电磁面积呈强正相关（Pearson +0.594），但因 storage_fraction 太小，nonstorage ≈ effective_injected，正相关可能更多来自注入规模而非反演本身；
+8. 下一步应人工复核 C_stage / stable segment / 单位、再做 Carter leakoff calibration 与有效液量标定。
 
 ## 10. 明确不能写
 
@@ -276,6 +345,8 @@ stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0
 - "G函数反演体积已被微地震验证"；
 - "G函数反演体积已被广域电磁验证"；
 - "leakoff/nonstorage 正相关 → 模型已被验证"；
+- "shut-in efficiency 低于 10% 是物理结论"；
+- "通过缩小 C_stage 把 shut-in efficiency 调到 20%"；
 - "负相关问题已经消失"；
 - "physical PKN 结果证明模型错误"；
 - "closure pressure 已最终确定"；
@@ -284,6 +355,7 @@ stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0
 可以写：
 
 - "physical PKN storage 体积与微地震波及体积呈负相关，是当前最重要的待解释结果"；
+- "shut-in fluid efficiency 当前过低（median 8%），是 Phase 5D.6 标记的 blocker，需要先复核 C_stage / stable segment / 单位口径";
 - "leakoff / nonstorage proxy 与电磁面积呈正相关，但需要进一步分离纯 leakoff 与注入规模效应"；
 - "外部观测与 G函数反演体积之间可能存在物理口径差异"；
 - "当前结果是 candidate/estimate，需要人工图形复核"；
@@ -291,4 +363,7 @@ stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0
 
 ## 11. Figures
 
-Figures generated outside repo under `/tmp/gfunction-ref-audit-phase5d5/figures/` (Phase 5D.5 fluid partition: storage / leakoff / nonstorage vs microseismic / EM, stage-constant C baseline).
+Figures generated outside repo:
+
+- Phase 5D.5: `/tmp/gfunction-ref-audit-phase5d5/figures/` (fluid partition scatter plots, stage-constant C baseline);
+- Phase 5D.6: `/tmp/gfunction-ref-audit-phase5d6/` (efficiency audit CSV; no plots—shut-in efficiency is reported as blocker, not as a finalized observation).
