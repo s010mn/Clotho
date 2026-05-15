@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from clotho import __version__
+from clotho.batch import run_derivative_batch
 from clotho.g_function import nolte_g_time
 from clotho.pressure_derivative import derivative_value_summary, pressure_derivative_against_g_time
 from clotho.stage_data import (
@@ -116,6 +117,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         type=Path,
         help="Optional CSV path for the full pressure derivative table. Requires --pressure-derivative-preview.",
+    )
+
+    derivative_batch = subparsers.add_parser(
+        "derivative-batch",
+        help="Run manifest-driven batch pressure derivative export for reproducible experiments.",
+    )
+    derivative_batch.add_argument("--stage-params", required=True, type=Path, help="stage_params.csv path.")
+    derivative_batch.add_argument("--well-root", required=True, type=Path, help="Well directory containing stage_data/.")
+    derivative_batch.add_argument("--manifest", required=True, type=Path, help="Manual derivative batch manifest CSV path.")
+    derivative_batch.add_argument("--output-dir", required=True, type=Path, help="Existing output directory for CSV files.")
+    derivative_batch.add_argument("--volume-column", required=True, help="Cumulative volume column, e.g. total_volume.")
+    derivative_batch.add_argument("--rate-time-unit", required=True, help="Rate time unit, e.g. minute.")
+    derivative_batch.add_argument("--g-time-m", required=True, type=float, help="Nolte G-time m parameter.")
+    derivative_batch.add_argument("--well", default=None, help="Optional well name filter.")
+    derivative_batch.add_argument("--min-rate", default=10.0, type=float, help="Rate threshold recorded in summary.")
+    derivative_batch.add_argument(
+        "--summary-name",
+        default="derivative_batch_summary.csv",
+        help="Summary CSV file name inside output-dir.",
     )
 
     return parser
@@ -427,6 +447,29 @@ def _print_derivative_readiness(state: dict[str, object], *, derivative_was_comp
     print("closure_was_computed=False")
 
 
+# 输入：derivative-batch 命令参数。输出：退出码；写 CSV summary 和 ready stage 的导数表，不做 closure。
+def _run_derivative_batch(args: argparse.Namespace) -> int:
+    result = run_derivative_batch(
+        stage_params_path=args.stage_params,
+        well_root=args.well_root,
+        manifest_path=args.manifest,
+        output_dir=args.output_dir,
+        volume_column=args.volume_column,
+        rate_time_unit=args.rate_time_unit,
+        g_time_m=args.g_time_m,
+        well=args.well,
+        min_rate=args.min_rate,
+        summary_name=args.summary_name,
+    )
+    print(f"batch_stage_count={result['stage_count']}")
+    print(f"batch_ready_stage_count={result['ready_stage_count']}")
+    print(f"batch_not_ready_stage_count={result['not_ready_stage_count']}")
+    print(f"batch_derivative_csv_written_count={result['derivative_csv_written_count']}")
+    print(f"batch_summary_output_path={result['summary_path']}")
+    print("closure_was_computed=False")
+    return 0
+
+
 # 输入：window-audit 命令参数。输出：退出码；只做窗口审计和可选 G-time/导数前置条件预览，不做导数、闭合或反演。
 def _run_window_audit(args: argparse.Namespace) -> int:
     if args.g_time_m is not None and args.g_time_count <= 0:
@@ -589,6 +632,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "window-audit":
         try:
             return _run_window_audit(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "derivative-batch":
+        try:
+            return _run_derivative_batch(args)
         except ValueError as exc:
             parser.error(str(exc))
 

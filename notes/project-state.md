@@ -1484,3 +1484,36 @@ Phase 3I：valid falloff window 口径设计
 - Excel/PNG reporting
 
 如果 readiness 不通过，不写 CSV，只报告 blocker。
+
+## Phase 4D：批量压力导数复现实验入口
+
+新增 `clotho derivative-batch`。
+
+该命令读取人工 manifest CSV，对多个 stage 批量执行：
+
+- 人工有效压降窗口；
+- 显式重复 elapsed policy；
+- derivative-readiness；
+- dP/dG / G dP/dG 预览；
+- per-stage derivative CSV；
+- batch summary CSV。
+
+manifest 必须显式给出：
+
+- stage
+- max_sustained_rate
+- valid_falloff_end_elapsed
+
+本阶段仍然不做：
+
+- closure
+- smoothing
+- automatic bleedoff detection
+- resampling
+- Carter
+- PKN
+- volume balance
+- fracture inversion
+- Excel/PNG reporting
+
+readiness 不通过的 stage 不写 derivative CSV，只在 summary 中记录 blocker。
