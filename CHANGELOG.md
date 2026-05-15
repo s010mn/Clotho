@@ -2234,3 +2234,202 @@ Phase 4I：导数审查清单增强或人工审查计划
 - 不做 smoothing、resampling、automatic bleedoff detection、Carter、PKN、volume balance、fracture inversion 或 Excel/PNG reporting。
 
 用途：帮助人工发现 stage 7 / stage 8 这类 high absolute dP/dG、但默认 priority 可能仍为 low 的对象。
+
+## Phase 4K：重复 elapsed policy 敏感性审计
+
+本阶段使用同一组 Phase 4F 有效压降窗口，比较了四种显式 duplicate policy：
+
+- `none`
+- `keep-first`
+- `keep-last`
+- `mean`
+
+本地输出只写入仓库外：
+
+```text
+/tmp/gfunction-ref-audit-phase4k/
+```
+
+派生汇总 CSV：
+
+```text
+/tmp/gfunction-ref-audit-phase4k/policy_sensitivity_review_long.csv
+/tmp/gfunction-ref-audit-phase4k/policy_sensitivity_key_stages.csv
+/tmp/gfunction-ref-audit-phase4k/policy_sensitivity_priority_pivot.csv
+```
+
+没有复制 `gfunc/`、`wells/`、`well4/`、`data/raw/` 或真实井数据到 Clotho。
+
+### 批量导数可计算性
+
+```text
+policy      ready  not_ready  derivative_csv_written
+none        13     15         13
+keep-first  28      0         28
+keep-last   28      0         28
+mean        28      0         28
+```
+
+解释：
+
+- `none` 下仍有 15/28 个 candidate stage 因重复 G-time 不可直接计算导数；
+- `keep-first`、`keep-last`、`mean` 都能让 28/28 个 candidate stage 通过 readiness 并写出 derivative CSV；
+- 这说明 duplicate policy 对批量导数复现实验入口影响很大。
+
+### derivative-review priority counts
+
+本阶段 review 使用：
+
+```text
+--large-abs-dpdg-threshold 10000
+--print-top-n 10
+```
+
+结果：
+
+```text
+policy      high  medium  low
+none        15     2      11
+keep-first   2    15      11
+keep-last    2    15      11
+mean         2    15      11
+```
+
+high stages：
+
+```text
+none:       1, 2, 5, 9, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+keep-first: 5, 21
+keep-last:  5, 21
+mean:       5, 21
+```
+
+medium stages：
+
+```text
+none:       7, 8
+keep-first: 1, 2, 7, 8, 9, 11, 13, 14, 16, 17, 18, 19, 24, 27, 29
+keep-last:  1, 2, 7, 8, 9, 11, 13, 14, 16, 17, 18, 19, 24, 27, 29
+mean:       1, 2, 7, 8, 9, 11, 13, 14, 16, 17, 18, 19, 24, 27, 29
+```
+
+low stages：
+
+```text
+none:       3, 6, 10, 12, 15, 20, 22, 23, 26, 28, 30
+keep-first: 3, 6, 10, 12, 15, 20, 22, 23, 26, 28, 30
+keep-last:  3, 6, 10, 12, 15, 20, 22, 23, 26, 28, 30
+mean:       3, 6, 10, 12, 15, 20, 22, 23, 26, 28, 30
+```
+
+### 重点 stage 观察
+
+Stage 5：
+
+```text
+none:        high, not derivative-ready
+keep-first:  high, rows_removed=53, dP_dG_abs_max=11136.005885, positive_ratio=0.218945
+keep-last:   high, rows_removed=53, dP_dG_abs_max=11136.005885, positive_ratio=0.213584
+mean:        high, rows_removed=53, dP_dG_abs_max=11136.005885, positive_ratio=0.212690
+```
+
+Stage 21：
+
+```text
+none:        high, not derivative-ready
+keep-first:  high, rows_removed=68, dP_dG_abs_max=1736.562433, positive_ratio=0.150615
+keep-last:   high, rows_removed=68, dP_dG_abs_max=1736.562433, positive_ratio=0.152664
+mean:        high, rows_removed=68, dP_dG_abs_max=1736.562433, positive_ratio=0.149590
+```
+
+解释：
+
+- stage 5 / stage 21 在所有可计算 duplicate policy 下仍是 high priority；
+- 原因是 large duplicate removal，而不是 closure；
+- keep-first / keep-last / mean 对 positive ratio 有小差异，但不改变 high-priority 结论。
+
+Stage 7 / Stage 8：
+
+```text
+stage 7: dP_dG_abs_max=12998.047493, rows_removed=0, priority=medium under all policies
+stage 8: dP_dG_abs_max=13693.500874, rows_removed=0, priority=medium under all policies
+```
+
+解释：
+
+- 在 `--large-abs-dpdg-threshold 10000` 下，stage 7 / stage 8 均因 large absolute dP/dG 进入 medium；
+- 它们不受 duplicate policy 影响，仍需人工查看导数形态。
+
+Stage 10：
+
+```text
+rows_removed=0
+CSV rows=1127
+dP_dG_abs_max=4487.167663
+positive_ratio=0.095830
+priority=low under all policies
+```
+
+解释：
+
+stage 10 仍适合作为 no-duplicate reference case。
+
+Stage 1：
+
+```text
+none: high, not derivative-ready
+keep-first / keep-last / mean: medium, rows_removed=3, CSV rows=1198, dP_dG_abs_max=287.747535, positive_ratio=0.304674
+```
+
+解释：
+
+stage 1 仍适合作为 small duplicate handling reference case。
+
+Stage 3：
+
+```text
+positive_ratio=0.473473
+priority=low under all policies
+```
+
+解释：
+
+stage 3 是正导数比例最高的样本，但在当前 `positive_derivative_ratio_threshold=0.5` 下未触发 high flag。
+
+Stage 29：
+
+```text
+none: high, not derivative-ready
+keep-first / keep-last / mean: medium, rows_removed=1, CSV rows=1087, dP_dG_abs_max=2096.018675, positive_ratio=0.057038
+```
+
+解释：
+
+stage 29 通过显式 duplicate policy 从 blocked 变为可计算导数，但仍需作为 small duplicate removal 样本审查。
+
+### 当前解释边界
+
+Phase 4K 证明：
+
+1. `keep-first`、`keep-last`、`mean` 都能消除本批 28 个 candidate stage 的重复 G-time readiness blocker；
+2. 三种可计算 duplicate policy 的 review priority 分布一致：high=2、medium=15、low=11；
+3. stage 5 / stage 21 始终是 highest-priority duplicate-removal 风险对象；
+4. stage 7 / stage 8 始终是 high absolute dP/dG 人工关注对象；
+5. stage 10 仍是 no-duplicate reference case；
+6. stage 1 仍是 small duplicate handling reference case；
+7. keep-first / keep-last / mean 在若干数值统计上有差异，但在本阶段的 priority 和 top-N 分诊结论上没有关键差异；
+8. 这仍然不是 closure。
+
+本阶段没有：
+
+- closure diagnostics；
+- closure pressure picking；
+- ISIP / closure 自动解释；
+- smoothing；
+- resampling；
+- automatic active-bleedoff detection；
+- Carter；
+- PKN；
+- volume balance；
+- fracture inversion；
+- Excel/PNG reporting。
