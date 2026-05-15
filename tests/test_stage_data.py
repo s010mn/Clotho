@@ -5,8 +5,10 @@ import pytest
 from clotho.stage_data import (
     InjectionWindowPolicy,
     add_estimated_bottomhole_pressure,
+    apply_elapsed_duplicate_policy,
     compare_injection_duration_policies,
     elapsed_seconds_after,
+    falloff_window_after_shut_in,
     find_shut_in_index,
     find_time_index,
     picked_duration_seconds,
@@ -364,6 +366,72 @@ def test_bad_numeric_pressure_raises_value_error(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="wellhead_pressure_mpa|bad_pressure"):
         read_stage_curve(path)
+
+
+def test_falloff_window_after_shut_in_uses_manual_end_elapsed(tmp_path) -> None:
+    path = tmp_path / "stage_01.csv"
+    path.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "00:00:00,20,10,0,0\n"
+        "00:00:01,21,10,0.3333333333,0.3333333333\n"
+        "00:00:02,22,10,0.6666666667,0.6666666667\n"
+        "00:00:03,23,0,1.0,1.0\n"
+        "00:00:04,22,0,1.0,1.0\n"
+        "00:00:05,21,0,1.0,1.0\n"
+        "00:00:06,5,0,1.0,1.0\n"
+        "00:00:07,0,0,1.0,1.0\n",
+        encoding="utf-8",
+    )
+    curve = read_stage_curve(path)
+    shut_in_index = find_shut_in_index(curve, "00:00:03")
+
+    full_window = falloff_window_after_shut_in(curve, shut_in_index)
+    clipped_window = falloff_window_after_shut_in(curve, shut_in_index, end_elapsed_seconds=2)
+
+    assert list(full_window["elapsed_seconds"]) == [0.0, 1.0, 2.0, 3.0, 4.0]
+    assert list(clipped_window["elapsed_seconds"]) == [0.0, 1.0, 2.0]
+    assert list(clipped_window["wellhead_pressure_mpa"]) == [23, 22, 21]
+
+
+@pytest.mark.parametrize("policy", ["none", "keep-first", "keep-last", "mean"])
+def test_apply_elapsed_duplicate_policy_is_explicit(tmp_path, policy) -> None:
+    path = tmp_path / "stage_01.csv"
+    path.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n"
+        "00:00:03,23,0,1.0,1.0\n"
+        "00:00:04,22,0,1.0,1.0\n"
+        "00:00:04,20,0,1.0,1.0\n"
+        "00:00:05,19,0,1.0,1.0\n",
+        encoding="utf-8",
+    )
+    curve = read_stage_curve(path)
+    window = falloff_window_after_shut_in(curve, 0)
+
+    result = apply_elapsed_duplicate_policy(window, policy=policy)
+
+    if policy == "none":
+        assert list(result["elapsed_seconds"]) == [0.0, 1.0, 1.0, 2.0]
+        assert list(result["wellhead_pressure_mpa"]) == [23, 22, 20, 19]
+    elif policy == "keep-first":
+        assert list(result["elapsed_seconds"]) == [0.0, 1.0, 2.0]
+        assert list(result["wellhead_pressure_mpa"]) == [23, 22, 19]
+    elif policy == "keep-last":
+        assert list(result["elapsed_seconds"]) == [0.0, 1.0, 2.0]
+        assert list(result["wellhead_pressure_mpa"]) == [23, 20, 19]
+    else:
+        assert list(result["elapsed_seconds"]) == [0.0, 1.0, 2.0]
+        assert list(result["wellhead_pressure_mpa"]) == [23.0, 21.0, 19.0]
+
+
+@pytest.mark.parametrize("bad_end", [-1, float("inf")])
+def test_falloff_window_after_shut_in_rejects_bad_end_elapsed(tmp_path, bad_end) -> None:
+    path = tmp_path / "stage_01.csv"
+    _write_teaching_curve(path)
+    curve = read_stage_curve(path)
+
+    with pytest.raises(ValueError, match="end_elapsed_seconds"):
+        falloff_window_after_shut_in(curve, 0, end_elapsed_seconds=bad_end)
+
 
 
 def test_injection_window_policy_names_future_tp_choices() -> None:

@@ -169,6 +169,8 @@ def test_window_audit_cli_does_not_print_g_time_by_default(tmp_path, capsys) -> 
     assert "g_time_tp_source" not in captured.out
     assert "nolte_g_time" not in captured.out
     assert "derivative_readiness_" not in captured.out
+    assert "falloff_window_" not in captured.out
+    assert "elapsed_duplicate_policy" not in captured.out
 
 
 def test_window_audit_cli_prints_optional_g_time_preview(tmp_path, capsys) -> None:
@@ -228,6 +230,43 @@ def _write_duplicate_elapsed_window_audit_inputs(tmp_path) -> tuple[object, obje
     return stage_params, well_root
 
 
+def _write_manual_falloff_window_audit_inputs(tmp_path, *, duplicate_elapsed: bool = False) -> tuple[object, object]:
+    stage_data_dir = tmp_path / "stage_data"
+    stage_data_dir.mkdir()
+
+    stage_params = tmp_path / "stage_params.csv"
+    stage_params.write_text(
+        "well,stage,file,shut_in,n,spacing,hw,e_gpa,nu,sigma_min,add_pressure\n"
+        "demo,1,stage_data/stage_01.csv,00:00:03,1,10,50,30,0.25,90,5\n",
+        encoding="utf-8",
+    )
+
+    rows = [
+        "00:00:00,20,10,0,0",
+        "00:00:01,21,10,0.3333333333,0.3333333333",
+        "00:00:02,22,10,0.6666666667,0.6666666667",
+        "00:00:03,23,0,1.0,1.0",
+        "00:00:04,22,0,1.0,1.0",
+    ]
+    if duplicate_elapsed:
+        rows.append("00:00:04,21,0,1.0,1.0")
+    rows.extend(
+        [
+            "00:00:05,21,0,1.0,1.0" if not duplicate_elapsed else "00:00:05,20,0,1.0,1.0",
+            "00:00:06,5,0,1.0,1.0",
+            "00:00:07,0,0,1.0,1.0",
+        ]
+    )
+
+    curve_file = stage_data_dir / "stage_01.csv"
+    curve_file.write_text(
+        "time,wellhead_pressure,rate,stage_volume,total_volume\n" + "\n".join(rows) + "\n",
+        encoding="utf-8",
+    )
+
+    return stage_params, tmp_path
+
+
 def test_window_audit_cli_reports_clean_derivative_readiness(tmp_path, capsys) -> None:
     stage_params, well_root = _write_g_time_window_audit_inputs(tmp_path)
 
@@ -283,6 +322,135 @@ def test_window_audit_cli_reports_duplicate_elapsed_readiness_blocker(tmp_path, 
     assert "derivative_readiness_blockers=G-time is not strictly increasing" in captured.out
     assert "derivative_was_computed=False" in captured.out
     assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_manual_valid_falloff_end_trims_tail(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + ["--g-time-m", "0.8", "--derivative-readiness", "--valid-falloff-end-elapsed", "2"]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "falloff_window_scope=manual_valid_end_elapsed" in captured.out
+    assert "falloff_window_end_elapsed_seconds=2" in captured.out
+    assert "falloff_window_raw_rows=5" in captured.out
+    assert "falloff_window_rows_after_valid_end=3" in captured.out
+    assert "falloff_window_rows_removed_by_valid_end=2" in captured.out
+    assert "falloff_window_rows_after_duplicate_policy=3" in captured.out
+    assert "falloff_window_rows_removed_by_duplicate_policy=0" in captured.out
+    assert "falloff_window_first_elapsed_seconds=0" in captured.out
+    assert "falloff_window_last_elapsed_seconds=2" in captured.out
+    assert "elapsed_duplicate_policy=none" in captured.out
+    assert "derivative_readiness_scope=falloff_window" in captured.out
+    assert "derivative_readiness_post_shut_in_rows=3" in captured.out
+    assert "derivative_readiness_ready=True" in captured.out
+    assert "derivative_was_computed=False" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_valid_window_does_not_silently_deduplicate(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path, duplicate_elapsed=True)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + [
+            "--g-time-m",
+            "0.8",
+            "--derivative-readiness",
+            "--valid-falloff-end-elapsed",
+            "2",
+            "--elapsed-duplicate-policy",
+            "none",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "elapsed_duplicate_policy=none" in captured.out
+    assert "falloff_window_rows_after_valid_end=4" in captured.out
+    assert "falloff_window_rows_after_duplicate_policy=4" in captured.out
+    assert "falloff_window_rows_removed_by_duplicate_policy=0" in captured.out
+    assert "derivative_readiness_elapsed_duplicate_step_count=1" in captured.out
+    assert "derivative_readiness_g_time_duplicate_step_count=1" in captured.out
+    assert "derivative_readiness_ready=False" in captured.out
+    assert "derivative_readiness_blockers=G-time is not strictly increasing" in captured.out
+
+
+def test_window_audit_cli_explicit_keep_last_duplicate_policy_can_improve_readiness(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path, duplicate_elapsed=True)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + [
+            "--g-time-m",
+            "0.8",
+            "--derivative-readiness",
+            "--valid-falloff-end-elapsed",
+            "2",
+            "--elapsed-duplicate-policy",
+            "keep-last",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "elapsed_duplicate_policy=keep-last" in captured.out
+    assert "falloff_window_rows_after_valid_end=4" in captured.out
+    assert "falloff_window_rows_after_duplicate_policy=3" in captured.out
+    assert "falloff_window_rows_removed_by_duplicate_policy=1" in captured.out
+    assert "derivative_readiness_elapsed_duplicate_step_count=0" in captured.out
+    assert "derivative_readiness_g_time_duplicate_step_count=0" in captured.out
+    assert "derivative_readiness_ready=True" in captured.out
+    assert "derivative_was_computed=False" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_rejects_negative_valid_falloff_end_elapsed(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _g_time_window_audit_args(stage_params, well_root)
+            + ["--g-time-m", "0.8", "--derivative-readiness", "--valid-falloff-end-elapsed", "-1"]
+        )
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "valid_falloff_end_elapsed" in captured.err
+    assert "well=demo" not in captured.out
+
+
+def test_window_audit_cli_rejects_valid_falloff_end_without_derivative_readiness(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_g_time_window_audit_args(stage_params, well_root) + ["--valid-falloff-end-elapsed", "2"])
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "--derivative-readiness" in captured.err
+    assert "well=demo" not in captured.out
+
+
+def test_window_audit_cli_rejects_duplicate_policy_without_derivative_readiness(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_g_time_window_audit_args(stage_params, well_root) + ["--elapsed-duplicate-policy", "keep-last"])
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "--derivative-readiness" in captured.err
+    assert "well=demo" not in captured.out
 
 
 def test_window_audit_cli_derivative_readiness_requires_g_time_m(tmp_path, capsys) -> None:

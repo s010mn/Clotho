@@ -11,7 +11,9 @@ from clotho.g_function import nolte_g_time
 from clotho.stage_data import (
     StageInfo,
     add_estimated_bottomhole_pressure,
+    apply_elapsed_duplicate_policy,
     elapsed_seconds_after,
+    falloff_window_after_shut_in,
     find_shut_in_index,
     picked_duration_seconds,
     rate_positive_duration_seconds,
@@ -74,6 +76,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--derivative-readiness",
         action="store_true",
         help="Audit basic data conditions for a future dP/dG calculation; does not compute derivatives.",
+    )
+    window_audit.add_argument(
+        "--valid-falloff-end-elapsed",
+        default=None,
+        type=float,
+        help=(
+            "Manual end elapsed seconds for the valid natural falloff window. "
+            "Only valid with --derivative-readiness; this is not automatic bleedoff detection."
+        ),
+    )
+    window_audit.add_argument(
+        "--elapsed-duplicate-policy",
+        choices=["none", "keep-first", "keep-last", "mean"],
+        default="none",
+        help=(
+            "Explicit duplicate elapsed handling for derivative-readiness only. "
+            "Default none means no silent deduplication."
+        ),
     )
 
     return parser
@@ -165,9 +185,8 @@ def _print_pressure_summary(prefix: str, summary: dict[str, float | int]) -> Non
 
 def _print_derivative_readiness(
     *,
-    curve,
+    window,
     stage: StageInfo,
-    shut_in_index: int,
     elapsed_all,
     g_time_all,
 ) -> None:
@@ -175,15 +194,15 @@ def _print_derivative_readiness(
     elapsed_summary = _sequence_step_summary(elapsed_all)
     g_time_summary = _sequence_step_summary(g_time_all)
 
-    whp_post = curve["wellhead_pressure_mpa"].iloc[shut_in_index:].to_numpy(dtype=float)
+    whp_post = window["wellhead_pressure_mpa"].to_numpy(dtype=float)
     pressure_column = "wellhead_pressure_mpa"
     estimated_available = stage.liquid_column_pressure_mpa is not None
     pressure_post = whp_post
 
     if estimated_available:
-        estimated_curve = add_estimated_bottomhole_pressure(curve, stage)
+        window = add_estimated_bottomhole_pressure(window, stage)
         pressure_column = "estimated_bottomhole_pressure_mpa"
-        pressure_post = estimated_curve[pressure_column].iloc[shut_in_index:].to_numpy(dtype=float)
+        pressure_post = window[pressure_column].to_numpy(dtype=float)
 
     whp_summary = _pressure_summary(whp_post)
     pressure_summary = _pressure_summary(pressure_post)
@@ -199,6 +218,7 @@ def _print_derivative_readiness(
     if not bool(g_time_summary["strictly_increasing"]):
         blockers.append("G-time is not strictly increasing")
 
+    print("derivative_readiness_scope=falloff_window")
     print("derivative_readiness_tp_source=volume_over_max_sustained_rate_seconds")
     print(f"derivative_readiness_pressure_column={pressure_column}")
     print(f"derivative_readiness_post_shut_in_rows={len(g_time_array)}")
@@ -225,6 +245,14 @@ def _run_window_audit(args: argparse.Namespace) -> int:
         raise ValueError("g_time_count 必须大于 0")
     if args.derivative_readiness and args.g_time_m is None:
         raise ValueError("--derivative-readiness 需要同时传入 --g-time-m")
+    if args.valid_falloff_end_elapsed is not None:
+        valid_end = float(args.valid_falloff_end_elapsed)
+        if not np.isfinite(valid_end) or valid_end < 0.0:
+            raise ValueError("valid_falloff_end_elapsed 必须是有限且 >= 0 的数字")
+        if not args.derivative_readiness:
+            raise ValueError("--valid-falloff-end-elapsed 需要同时传入 --derivative-readiness")
+    if args.elapsed_duplicate_policy != "none" and not args.derivative_readiness:
+        raise ValueError("--elapsed-duplicate-policy 需要同时传入 --derivative-readiness")
 
     stages = read_stage_params(args.stage_params)
     stage = _find_stage(stages, stage_number=args.stage, well=args.well)
@@ -275,12 +303,58 @@ def _run_window_audit(args: argparse.Namespace) -> int:
         print(f"nolte_g_time={_format_float_list(g_time_preview)}")
 
         if args.derivative_readiness:
+            raw_window = falloff_window_after_shut_in(curve, shut_in_index)
+            falloff_window = falloff_window_after_shut_in(
+                curve,
+                shut_in_index,
+                end_elapsed_seconds=args.valid_falloff_end_elapsed,
+            )
+            readiness_window = apply_elapsed_duplicate_policy(
+                falloff_window,
+                policy=args.elapsed_duplicate_policy,
+            )
+            readiness_elapsed = readiness_window["elapsed_seconds"].to_numpy(dtype=float)
+            readiness_delta = [seconds / volume_rate_seconds for seconds in readiness_elapsed]
+            readiness_g_time = nolte_g_time(readiness_delta, args.g_time_m)
+
+            print(
+                "falloff_window_scope="
+                + (
+                    "manual_valid_end_elapsed"
+                    if args.valid_falloff_end_elapsed is not None
+                    else "full_post_shut_in"
+                )
+            )
+            print(
+                "falloff_window_end_elapsed_seconds="
+                + (
+                    _format_optional_float(float(args.valid_falloff_end_elapsed))
+                    if args.valid_falloff_end_elapsed is not None
+                    else "none"
+                )
+            )
+            print(f"falloff_window_raw_rows={len(raw_window)}")
+            print(f"falloff_window_rows_after_valid_end={len(falloff_window)}")
+            print(f"falloff_window_rows_after_duplicate_policy={len(readiness_window)}")
+            print(f"falloff_window_rows_removed_by_valid_end={len(raw_window) - len(falloff_window)}")
+            print(
+                "falloff_window_rows_removed_by_duplicate_policy="
+                f"{len(falloff_window) - len(readiness_window)}"
+            )
+            if len(readiness_window):
+                first_elapsed = float(readiness_window["elapsed_seconds"].iloc[0])
+                last_elapsed = float(readiness_window["elapsed_seconds"].iloc[-1])
+            else:
+                first_elapsed = float("nan")
+                last_elapsed = float("nan")
+            print(f"falloff_window_first_elapsed_seconds={_format_optional_float(first_elapsed)}")
+            print(f"falloff_window_last_elapsed_seconds={_format_optional_float(last_elapsed)}")
+            print(f"elapsed_duplicate_policy={args.elapsed_duplicate_policy}")
             _print_derivative_readiness(
-                curve=curve,
+                window=readiness_window,
                 stage=stage,
-                shut_in_index=shut_in_index,
-                elapsed_all=elapsed_all,
-                g_time_all=g_time_all,
+                elapsed_all=readiness_elapsed,
+                g_time_all=readiness_g_time,
             )
 
     if args.picked_start_time is not None:

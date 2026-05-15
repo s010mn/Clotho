@@ -25,6 +25,10 @@
 本文件还提供教学版泵注时间 tp/window policy：只比较不同时间尺度的定义，
 不判断哪一种一定正确，也不计算 G-function。
 
+本文件还提供最小“有效停泵压降段”切片工具。它只根据人工显式给出的
+停泵后 elapsed seconds 终点裁剪数据，并可按用户显式选择处理重复 elapsed。
+它不自动识别主动放压，不计算压力导数，不判断闭合压力。
+
 体积 / 最大稳定排量法需要一个“累计注入体积”。真实数据里，不能默认
 `stage_volume` 就是总注入量。well4 审计显示，`stage_volume` 在停泵前会回落或重置；
 `total_volume` 更像单调累计列。因此代码要求调用者显式传入 `volume_column`。
@@ -337,6 +341,83 @@ def elapsed_seconds_after(curve: pd.DataFrame, shut_in_index: int) -> tuple[floa
     seconds = _continuous_seconds(curve)
     elapsed = seconds[shut_in_index:] - seconds[shut_in_index]
     return tuple(float(value) for value in elapsed)
+
+
+# 输入：规范曲线表、停泵行号和可选人工终点。输出：停泵后的有效自然压降窗口。
+def falloff_window_after_shut_in(
+    curve: pd.DataFrame,
+    shut_in_index: int,
+    *,
+    end_elapsed_seconds: float | None = None,
+) -> pd.DataFrame:
+    """返回停泵后的有效压降窗口。
+
+    这个函数只做数据切片：
+    - 先从 shut_in_index 开始取停泵后数据；
+    - 加一列 elapsed_seconds；
+    - 如果给了 end_elapsed_seconds，只保留 elapsed_seconds <= end_elapsed_seconds。
+
+    物理含义：有效停泵压降段是停泵后、主动放压开始前的自然压力降落段。
+    这里的 end_elapsed_seconds 必须由人显式给出；本函数不自动识别主动放压。
+
+    本函数不识别 closure，不计算导数，不重采样，不去重。
+    """
+    _validate_row_index(curve, shut_in_index, "shut_in_index")
+    if end_elapsed_seconds is not None:
+        end_elapsed = float(end_elapsed_seconds)
+        if not np.isfinite(end_elapsed) or end_elapsed < 0.0:
+            raise ValueError("end_elapsed_seconds 必须是有限且 >= 0 的数字")
+    else:
+        end_elapsed = None
+
+    window = curve.iloc[shut_in_index:].copy()
+    window["elapsed_seconds"] = elapsed_seconds_after(curve, shut_in_index)
+    if end_elapsed is not None:
+        window = window[window["elapsed_seconds"] <= end_elapsed].copy()
+    return window
+
+
+# 输入：有效压降窗口和显式策略。输出：按 elapsed_seconds 处理重复行后的窗口。
+def apply_elapsed_duplicate_policy(
+    window: pd.DataFrame,
+    *,
+    policy: str = "none",
+) -> pd.DataFrame:
+    """显式处理重复 elapsed_seconds。
+
+    policy="none" 时不处理；
+    policy="keep-first" 时相同 elapsed_seconds 保留第一行；
+    policy="keep-last" 时相同 elapsed_seconds 保留最后一行；
+    policy="mean" 时相同 elapsed_seconds 的数值列取均值，非数值列保留第一行。
+
+    注意：mean 只是数据质量准备策略，不是最终物理解释算法。
+    """
+    if "elapsed_seconds" not in window.columns:
+        raise ValueError("缺少 elapsed_seconds 列，不能处理重复 elapsed")
+
+    allowed = {"none", "keep-first", "keep-last", "mean"}
+    if policy not in allowed:
+        raise ValueError(f"不认识的 elapsed duplicate policy: {policy!r}")
+
+    if policy == "none":
+        return window.copy()
+    if policy == "keep-first":
+        return window.drop_duplicates(subset=["elapsed_seconds"], keep="first").copy()
+    if policy == "keep-last":
+        return window.drop_duplicates(subset=["elapsed_seconds"], keep="last").copy()
+
+    rows: list[dict[str, Any]] = []
+    for elapsed, group in window.groupby("elapsed_seconds", sort=False):
+        row: dict[str, Any] = {}
+        for column in window.columns:
+            if column == "elapsed_seconds":
+                row[column] = float(elapsed)
+            elif pd.api.types.is_numeric_dtype(window[column]):
+                row[column] = float(group[column].mean())
+            else:
+                row[column] = group[column].iloc[0]
+        rows.append(row)
+    return pd.DataFrame(rows, columns=window.columns)
 
 
 # 输入：规范曲线表。输出：连续秒数；跨午夜时后一天自动加 86400 秒。

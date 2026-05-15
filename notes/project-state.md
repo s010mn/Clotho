@@ -1394,3 +1394,30 @@ Phase 3I：valid falloff window 口径设计
 3. 自动候选必须要求人工确认后才用于导数；
 4. 有效压降段裁剪和重复 elapsed 处理必须分开审计；
 5. 原始数据必须保留，处理后数据只能作为导数输入，不覆盖原始曲线。
+
+## Phase 4A：最小有效停泵压降段管线
+
+新增 `window-audit` 的人工有效压降窗口参数：
+
+- `--valid-falloff-end-elapsed`
+- `--elapsed-duplicate-policy`
+
+目标是把“停泵后、主动放压前的自然压力降落段”显式作为后续导数/closure 的数据准备边界。
+
+本阶段仍然不计算：
+
+- dP/dG
+- G dP/dG
+- closure
+- smoothing
+- resampling
+- Carter
+- PKN
+- volume balance
+- fracture inversion
+
+`--valid-falloff-end-elapsed` 是人工显式参数，不是自动主动放压识别。
+
+`--elapsed-duplicate-policy` 默认 `none`，不会静默去重。只有用户显式选择 keep-first / keep-last / mean 时才处理重复 elapsed。
+
+该阶段的意义是让 Clotho 从单纯审计推进到“可生成明确有效压降段输入”的最小可运行分析管线。
