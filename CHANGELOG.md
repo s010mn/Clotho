@@ -1889,3 +1889,309 @@ stage 10 作为 no-duplicate reference case
 - volume balance；
 - fracture inversion；
 - Excel/PNG reporting。
+
+## Phase 4H：none vs keep-last 导数审查清单对比实验
+
+本阶段不修改源码、测试或 CLI，不提交真实井数据。
+
+目标：
+
+```text
+使用当前已经实现的 `clotho derivative-review`，
+对 Phase 4F 生成的 none / keep-last 两组 batch derivative 输出做人工审查清单对比。
+```
+
+输入 summary：
+
+```text
+/tmp/gfunction-ref-audit-phase4f/none/derivative_batch_summary_none.csv
+/tmp/gfunction-ref-audit-phase4f/keep_last/derivative_batch_summary_keep_last.csv
+```
+
+输出 review / comparison CSV：
+
+```text
+/tmp/gfunction-ref-audit-phase4f/none/derivative_review_none.csv
+/tmp/gfunction-ref-audit-phase4f/keep_last/derivative_review_keep_last.csv
+/tmp/gfunction-ref-audit-phase4f/derivative_review_policy_comparison.csv
+```
+
+所有输出都在仓库外 `/tmp/gfunction-ref-audit-phase4f/` 下。
+
+没有复制以下目录或数据到 Clotho：
+
+```text
+gfunc/
+wells/
+well4/
+data/raw/
+真实井数据
+```
+
+### policy = none review
+
+stdout 摘要：
+
+```text
+review_stage_count=28
+review_high_priority_count=15
+review_medium_priority_count=0
+review_low_priority_count=13
+review_output_path=/tmp/gfunction-ref-audit-phase4f/none/derivative_review_none.csv
+closure_was_computed=False
+```
+
+priority counts：
+
+```text
+high 15
+medium 0
+low 13
+```
+
+high-priority stages：
+
+```text
+1, 2, 5, 9, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+```
+
+low-priority stages：
+
+```text
+3, 6, 7, 8, 10, 12, 15, 20, 22, 23, 26, 28, 30
+```
+
+解释：
+
+none policy 下，15/28 个 candidate stage 因 `derivative_was_computed=False` 被标为 high priority。主要原因仍然是 `G-time is not strictly increasing`。
+
+### policy = keep-last review
+
+stdout 摘要：
+
+```text
+review_stage_count=28
+review_high_priority_count=2
+review_medium_priority_count=13
+review_low_priority_count=13
+review_output_path=/tmp/gfunction-ref-audit-phase4f/keep_last/derivative_review_keep_last.csv
+closure_was_computed=False
+```
+
+priority counts：
+
+```text
+high 2
+medium 13
+low 13
+```
+
+high-priority stages：
+
+```text
+5, 21
+```
+
+medium-priority stages：
+
+```text
+1, 2, 9, 11, 13, 14, 16, 17, 18, 19, 24, 27, 29
+```
+
+low-priority stages：
+
+```text
+3, 6, 7, 8, 10, 12, 15, 20, 22, 23, 26, 28, 30
+```
+
+解释：
+
+keep-last 让 28/28 个 candidate stage 都变为可计算导数，但 review 仍将 2 个 stage 标为 high priority，将 13 个 stage 标为 medium priority。
+
+### policy comparison
+
+comparison CSV：
+
+```text
+/tmp/gfunction-ref-audit-phase4f/derivative_review_policy_comparison.csv
+```
+
+对比结果：
+
+```text
+computed_changed_count=15
+priority_changed_count=13
+```
+
+从 not-computed 变为 computed 的 stage：
+
+```text
+1, 2, 5, 9, 11, 13, 14, 16, 17, 18, 19, 21, 24, 27, 29
+```
+
+keep-last 下 high-priority stages：
+
+```text
+5, 21
+```
+
+### high-priority stage 详情
+
+Stage 5：
+
+```text
+priority=high
+reason=large duplicate removal
+rows_removed=53
+dP_dG_positive_ratio=0.213584
+dP_dG_abs_max=11136.005885
+CSV rows=1119
+```
+
+前几行导数摘要：
+
+```text
+elapsed_seconds  pressure_mpa     dP_dG_mpa  G_dP_dG_mpa
+0.0              117.7796       129.612782    0.000000
+1.0              117.8096       173.420782    0.040140
+2.0              117.8596     -5953.079980   -2.749405
+3.0              115.0796    -11136.005885   -7.700772
+4.0              112.7496     -6262.032524   -5.764937
+```
+
+Stage 21：
+
+```text
+priority=high
+reason=large duplicate removal
+rows_removed=68
+dP_dG_positive_ratio=0.152664
+dP_dG_abs_max=1736.562433
+CSV rows=976
+```
+
+前几行导数摘要：
+
+```text
+elapsed_seconds  pressure_mpa    dP_dG_mpa  G_dP_dG_mpa
+0.0              113.4697     -1736.562433   -0.000000
+1.0              113.0697     -1587.592178   -0.365686
+2.0              112.7397     -1244.359787   -0.571929
+3.0              112.4997      -765.881895   -0.527069
+4.0              112.3897       397.078472    0.363796
+```
+
+解释：
+
+stage 5 和 stage 21 在 keep-last 下移除重复 elapsed 行数最多；duplicate policy 对导数输入数据改动很大；这两个 stage 是最高优先级人工审查对象。
+
+### reference stage 和小重复样本
+
+Stage 10：
+
+```text
+priority=low
+reason=no review flags
+rows_removed=0
+dP_dG_positive_ratio=0.095830
+dP_dG_abs_max=4487.167663
+CSV rows=1127
+```
+
+解释：
+
+stage 10 在 keep-last 下 `rows_removed=0`；none 和 keep-last row count 都是 1127；它适合作为 no-duplicate reference case。
+
+Stage 1：
+
+```text
+priority=medium
+reason=some duplicate removal
+rows_removed=3
+dP_dG_positive_ratio=0.304674
+dP_dG_abs_max=287.747535
+CSV rows=1198
+```
+
+解释：
+
+stage 1 是从 blocked 变为 ready 的小重复样本；可用于对比少量 duplicate removal 对导数形态的影响。
+
+### 额外关注 stage
+
+keep-last 下 `dP_dG_abs_max` 最大的 stage：
+
+```text
+stage 8:  13693.500874, priority=low
+stage 7:  12998.047493, priority=low
+stage 5:  11136.005885, priority=high
+stage 9:   6422.041353, priority=medium
+stage 17:  5546.610910, priority=medium
+stage 13:  5448.395680, priority=medium
+stage 6:   4653.172476, priority=low
+stage 10:  4487.167663, priority=low
+stage 27:  3838.380094, priority=medium
+stage 11:  3669.707905, priority=medium
+```
+
+解释：
+
+当前 review 没有把 `dP_dG_abs_max` 阈值作为 high flag；但 stage 8、stage 7、stage 5、stage 9、stage 17、stage 13 等仍值得人工查看导数曲线形态。
+
+keep-last 下 dP/dG 正值比例最高的 stage：
+
+```text
+stage 3:  0.473473, priority=low
+stage 9:  0.330298, priority=medium
+stage 2:  0.330218, priority=medium
+stage 1:  0.304674, priority=medium
+stage 7:  0.275862, priority=low
+stage 6:  0.274809, priority=low
+stage 22: 0.273171, priority=low
+stage 8:  0.269737, priority=low
+stage 26: 0.256957, priority=low
+stage 17: 0.256608, priority=medium
+```
+
+### 当前解释边界
+
+Phase 4H 证明：
+
+1. derivative-review 能把 batch 输出转化为人工审查清单；
+2. none policy 下 high priority 主要代表导数未计算；
+3. keep-last policy 下 28/28 个候选 stage 都能计算导数；
+4. keep-last 之后仍有 stage 5 / stage 21 因 large duplicate removal 保持 high priority；
+5. stage 10 可作为 no-duplicate reference case；
+6. stage 1 可作为小规模 duplicate handling case；
+7. stage 8 / stage 7 虽然 priority=low，但 `dP_dG_abs_max` 很高，应进入人工关注列表；
+8. 这仍然不是 closure。
+
+本阶段没有计算或输出：
+
+```text
+closure diagnostics
+closure pressure
+ISIP / closure 自动解释
+Carter leakoff
+PKN
+volume balance
+fracture inversion
+```
+
+### 后续建议
+
+下一步不应直接实现 closure。
+
+更合理的下一步是：
+
+```text
+Phase 4I：导数审查清单增强或人工审查计划
+```
+
+候选方向：
+
+1. 将 `dP_dG_abs_max` 阈值纳入 review high/medium flag；
+2. 为 stage 5、stage 21、stage 10、stage 1 生成 CSV-only 审查摘要；
+3. 明确哪些 stage 需要人工画图，而不是自动 closure；
+4. 如果要画图，必须先作为仓库外 notebook / 手工输出，不要直接做 Excel/PNG reporting；
+5. 在 closure-candidate audit 前，先确认 duplicate policy 对导数曲线的影响。
