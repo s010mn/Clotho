@@ -1421,3 +1421,37 @@ Phase 3I：valid falloff window 口径设计
 `--elapsed-duplicate-policy` 默认 `none`，不会静默去重。只有用户显式选择 keep-first / keep-last / mean 时才处理重复 elapsed。
 
 该阶段的意义是让 Clotho 从单纯审计推进到“可生成明确有效压降段输入”的最小可运行分析管线。
+
+
+## Phase 4B：最小压力-G-time 导数预览
+
+新增严格受限的压力导数预览：
+
+- `pressure_derivative_against_g_time(g_time, pressure_mpa)`
+- `window-audit --pressure-derivative-preview`
+- `--pressure-derivative-count`
+
+导数预览只在人工有效压降窗口上运行，并要求：
+
+- `--derivative-readiness`
+- `--g-time-m`
+- `--valid-falloff-end-elapsed`
+
+本阶段计算：
+
+- dP/dG
+- G dP/dG
+
+但仍然不做：
+
+- closure
+- smoothing
+- automatic bleedoff detection
+- resampling
+- Carter
+- PKN
+- volume balance
+- fracture inversion
+- reporting
+
+如果有效窗口或重复 elapsed 策略不能让 G-time 严格递增，则不计算导数，只报告 blocker。

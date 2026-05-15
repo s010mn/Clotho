@@ -5,6 +5,7 @@ import pytest
 from clotho import __version__
 from clotho.cli import main
 from clotho.g_function import nolte_g_time
+from clotho.pressure_derivative import pressure_derivative_against_g_time
 
 
 def test_package_has_version() -> None:
@@ -171,6 +172,7 @@ def test_window_audit_cli_does_not_print_g_time_by_default(tmp_path, capsys) -> 
     assert "derivative_readiness_" not in captured.out
     assert "falloff_window_" not in captured.out
     assert "elapsed_duplicate_policy" not in captured.out
+    assert "pressure_derivative_" not in captured.out
 
 
 def test_window_audit_cli_prints_optional_g_time_preview(tmp_path, capsys) -> None:
@@ -409,6 +411,156 @@ def test_window_audit_cli_explicit_keep_last_duplicate_policy_can_improve_readin
     assert "derivative_readiness_ready=True" in captured.out
     assert "derivative_was_computed=False" in captured.out
     assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_pressure_derivative_preview_computes_when_readiness_passes(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + [
+            "--g-time-m",
+            "0.8",
+            "--derivative-readiness",
+            "--valid-falloff-end-elapsed",
+            "2",
+            "--elapsed-duplicate-policy",
+            "none",
+            "--pressure-derivative-preview",
+            "--pressure-derivative-count",
+            "3",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    g_time = nolte_g_time([0.0, 1.0 / 6.0, 1.0 / 3.0], 0.8)
+    pressure = [28.0, 27.0, 26.0]
+    dP_dG, G_dP_dG = pressure_derivative_against_g_time(g_time, pressure)
+
+    assert exit_code == 0
+    assert "pressure_derivative_preview_requested=True" in captured.out
+    assert "pressure_derivative_was_computed=True" in captured.out
+    assert "pressure_derivative_scope=falloff_window" in captured.out
+    assert "pressure_derivative_pressure_column=estimated_bottomhole_pressure_mpa" in captured.out
+    assert "pressure_derivative_method=numpy.gradient_edge_order_1" in captured.out
+    assert "pressure_derivative_count_requested=3" in captured.out
+    assert "pressure_derivative_count_returned=3" in captured.out
+    assert f"pressure_derivative_g_time={_format_expected_float_list(g_time)}" in captured.out
+    assert "pressure_derivative_pressure_mpa=[28, 27, 26]" in captured.out
+    assert f"pressure_derivative_dP_dG_mpa={_format_expected_float_list(dP_dG)}" in captured.out
+    assert f"pressure_derivative_G_dP_dG_mpa={_format_expected_float_list(G_dP_dG)}" in captured.out
+    assert "derivative_was_computed=True" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_pressure_derivative_preview_skips_when_readiness_fails(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path, duplicate_elapsed=True)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + [
+            "--g-time-m",
+            "0.8",
+            "--derivative-readiness",
+            "--valid-falloff-end-elapsed",
+            "2",
+            "--elapsed-duplicate-policy",
+            "none",
+            "--pressure-derivative-preview",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "derivative_readiness_ready=False" in captured.out
+    assert "derivative_readiness_blockers=G-time is not strictly increasing" in captured.out
+    assert "pressure_derivative_preview_requested=True" in captured.out
+    assert "pressure_derivative_was_computed=False" in captured.out
+    assert "pressure_derivative_blockers=G-time is not strictly increasing" in captured.out
+    assert "derivative_was_computed=False" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_pressure_derivative_preview_works_after_keep_last_policy(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path, duplicate_elapsed=True)
+
+    exit_code = main(
+        _g_time_window_audit_args(stage_params, well_root)
+        + [
+            "--g-time-m",
+            "0.8",
+            "--derivative-readiness",
+            "--valid-falloff-end-elapsed",
+            "2",
+            "--elapsed-duplicate-policy",
+            "keep-last",
+            "--pressure-derivative-preview",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "elapsed_duplicate_policy=keep-last" in captured.out
+    assert "derivative_readiness_ready=True" in captured.out
+    assert "pressure_derivative_was_computed=True" in captured.out
+    assert "derivative_was_computed=True" in captured.out
+    assert "closure_was_computed=False" in captured.out
+
+
+def test_window_audit_cli_rejects_pressure_derivative_preview_without_derivative_readiness(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_g_time_window_audit_args(stage_params, well_root) + ["--pressure-derivative-preview"])
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "--derivative-readiness" in captured.err
+    assert "well=demo" not in captured.out
+
+
+def test_window_audit_cli_rejects_pressure_derivative_preview_without_valid_end(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _g_time_window_audit_args(stage_params, well_root)
+            + ["--g-time-m", "0.8", "--derivative-readiness", "--pressure-derivative-preview"]
+        )
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "--valid-falloff-end-elapsed" in captured.err
+    assert "well=demo" not in captured.out
+
+
+def test_window_audit_cli_rejects_nonpositive_pressure_derivative_count(tmp_path, capsys) -> None:
+    stage_params, well_root = _write_manual_falloff_window_audit_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _g_time_window_audit_args(stage_params, well_root)
+            + [
+                "--g-time-m",
+                "0.8",
+                "--derivative-readiness",
+                "--valid-falloff-end-elapsed",
+                "2",
+                "--pressure-derivative-preview",
+                "--pressure-derivative-count",
+                "0",
+            ]
+        )
+
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "pressure_derivative_count" in captured.err
+    assert "well=demo" not in captured.out
 
 
 def test_window_audit_cli_rejects_negative_valid_falloff_end_elapsed(tmp_path, capsys) -> None:

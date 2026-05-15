@@ -8,6 +8,7 @@ import numpy as np
 
 from clotho import __version__
 from clotho.g_function import nolte_g_time
+from clotho.pressure_derivative import pressure_derivative_against_g_time
 from clotho.stage_data import (
     StageInfo,
     add_estimated_bottomhole_pressure,
@@ -94,6 +95,20 @@ def build_parser() -> argparse.ArgumentParser:
             "Explicit duplicate elapsed handling for derivative-readiness only. "
             "Default none means no silent deduplication."
         ),
+    )
+    window_audit.add_argument(
+        "--pressure-derivative-preview",
+        action="store_true",
+        help=(
+            "Preview dP/dG and G dP/dG on the manual falloff window. "
+            "Requires --derivative-readiness and --valid-falloff-end-elapsed; does not compute closure."
+        ),
+    )
+    window_audit.add_argument(
+        "--pressure-derivative-count",
+        default=8,
+        type=int,
+        help="Number of derivative preview samples to print when --pressure-derivative-preview is provided.",
     )
 
     return parser
@@ -183,26 +198,27 @@ def _print_pressure_summary(prefix: str, summary: dict[str, float | int]) -> Non
     print(f"{prefix}_max={_format_optional_float(float(summary['max']))}")
 
 
-def _print_derivative_readiness(
+def _derivative_readiness_state(
     *,
     window,
     stage: StageInfo,
     elapsed_all,
     g_time_all,
-) -> None:
-    """输出未来 dP/dG 的最基本数据前置条件；这里不计算导数。"""
+) -> dict[str, object]:
+    """组装未来 dP/dG 的最基本数据前置条件；这里不计算导数。"""
     elapsed_summary = _sequence_step_summary(elapsed_all)
     g_time_summary = _sequence_step_summary(g_time_all)
 
     whp_post = window["wellhead_pressure_mpa"].to_numpy(dtype=float)
     pressure_column = "wellhead_pressure_mpa"
     estimated_available = stage.liquid_column_pressure_mpa is not None
+    pressure_window = window
     pressure_post = whp_post
 
     if estimated_available:
-        window = add_estimated_bottomhole_pressure(window, stage)
+        pressure_window = add_estimated_bottomhole_pressure(window, stage)
         pressure_column = "estimated_bottomhole_pressure_mpa"
-        pressure_post = window[pressure_column].to_numpy(dtype=float)
+        pressure_post = pressure_window[pressure_column].to_numpy(dtype=float)
 
     whp_summary = _pressure_summary(whp_post)
     pressure_summary = _pressure_summary(pressure_post)
@@ -218,9 +234,59 @@ def _print_derivative_readiness(
     if not bool(g_time_summary["strictly_increasing"]):
         blockers.append("G-time is not strictly increasing")
 
+    return {
+        "elapsed_summary": elapsed_summary,
+        "g_time_summary": g_time_summary,
+        "pressure_column": pressure_column,
+        "estimated_available": estimated_available,
+        "pressure_window": pressure_window,
+        "pressure_values": pressure_post,
+        "whp_summary": whp_summary,
+        "pressure_summary": pressure_summary,
+        "g_time_array": g_time_array,
+        "blockers": blockers,
+    }
+
+
+def _print_pressure_derivative_preview(*, readiness_state: dict[str, object], count: int) -> bool:
+    """在 readiness 通过时输出 dP/dG 预览；这里不做 closure。"""
+    blockers = readiness_state["blockers"]
+    print("pressure_derivative_preview_requested=True")
+    if blockers:
+        print("pressure_derivative_was_computed=False")
+        print(f"pressure_derivative_blockers={_format_blockers(blockers)}")
+        print("closure_was_computed=False")
+        return False
+
+    g_time = np.asarray(readiness_state["g_time_array"], dtype=float)
+    pressure = np.asarray(readiness_state["pressure_values"], dtype=float)
+    dP_dG, G_dP_dG = pressure_derivative_against_g_time(g_time, pressure)
+    preview_count = min(int(count), len(g_time))
+
+    print("pressure_derivative_was_computed=True")
+    print("pressure_derivative_scope=falloff_window")
+    print(f"pressure_derivative_pressure_column={readiness_state['pressure_column']}")
+    print("pressure_derivative_method=numpy.gradient_edge_order_1")
+    print(f"pressure_derivative_count_requested={count}")
+    print(f"pressure_derivative_count_returned={preview_count}")
+    print(f"pressure_derivative_g_time={_format_float_list(g_time[:preview_count])}")
+    print(f"pressure_derivative_pressure_mpa={_format_float_list(pressure[:preview_count])}")
+    print(f"pressure_derivative_dP_dG_mpa={_format_float_list(dP_dG[:preview_count])}")
+    print(f"pressure_derivative_G_dP_dG_mpa={_format_float_list(G_dP_dG[:preview_count])}")
+    print("closure_was_computed=False")
+    return True
+
+
+def _print_derivative_readiness(state: dict[str, object], *, derivative_was_computed: bool) -> None:
+    """输出未来 dP/dG 的最基本数据前置条件。"""
+    elapsed_summary = state["elapsed_summary"]
+    g_time_summary = state["g_time_summary"]
+    g_time_array = state["g_time_array"]
+    blockers = state["blockers"]
+
     print("derivative_readiness_scope=falloff_window")
     print("derivative_readiness_tp_source=volume_over_max_sustained_rate_seconds")
-    print(f"derivative_readiness_pressure_column={pressure_column}")
+    print(f"derivative_readiness_pressure_column={state['pressure_column']}")
     print(f"derivative_readiness_post_shut_in_rows={len(g_time_array)}")
     print(f"derivative_readiness_elapsed_duplicate_step_count={elapsed_summary['duplicate_step_count']}")
     print(f"derivative_readiness_elapsed_backward_step_count={elapsed_summary['backward_step_count']}")
@@ -230,12 +296,12 @@ def _print_derivative_readiness(
     print(f"derivative_readiness_g_time_backward_step_count={g_time_summary['backward_step_count']}")
     print(f"derivative_readiness_g_time_strictly_increasing={_bool_text(bool(g_time_summary['strictly_increasing']))}")
     print(f"derivative_readiness_g_time_nondecreasing={_bool_text(bool(g_time_summary['nondecreasing']))}")
-    _print_pressure_summary("derivative_readiness_wellhead_pressure", whp_summary)
-    print(f"derivative_readiness_estimated_bottomhole_pressure_available={_bool_text(estimated_available)}")
-    _print_pressure_summary("derivative_readiness_estimated_bottomhole_pressure", pressure_summary)
+    _print_pressure_summary("derivative_readiness_wellhead_pressure", state["whp_summary"])
+    print(f"derivative_readiness_estimated_bottomhole_pressure_available={_bool_text(bool(state['estimated_available']))}")
+    _print_pressure_summary("derivative_readiness_estimated_bottomhole_pressure", state["pressure_summary"])
     print(f"derivative_readiness_ready={_bool_text(not blockers)}")
     print(f"derivative_readiness_blockers={_format_blockers(blockers)}")
-    print("derivative_was_computed=False")
+    print(f"derivative_was_computed={_bool_text(derivative_was_computed)}")
     print("closure_was_computed=False")
 
 
@@ -253,6 +319,15 @@ def _run_window_audit(args: argparse.Namespace) -> int:
             raise ValueError("--valid-falloff-end-elapsed 需要同时传入 --derivative-readiness")
     if args.elapsed_duplicate_policy != "none" and not args.derivative_readiness:
         raise ValueError("--elapsed-duplicate-policy 需要同时传入 --derivative-readiness")
+    if args.pressure_derivative_count <= 0:
+        raise ValueError("pressure_derivative_count 必须大于 0")
+    if args.pressure_derivative_preview:
+        if not args.derivative_readiness:
+            raise ValueError("--pressure-derivative-preview 需要同时传入 --derivative-readiness")
+        if args.g_time_m is None:
+            raise ValueError("--pressure-derivative-preview 需要同时传入 --g-time-m")
+        if args.valid_falloff_end_elapsed is None:
+            raise ValueError("--pressure-derivative-preview 需要同时传入 --valid-falloff-end-elapsed")
 
     stages = read_stage_params(args.stage_params)
     stage = _find_stage(stages, stage_number=args.stage, well=args.well)
@@ -350,11 +425,22 @@ def _run_window_audit(args: argparse.Namespace) -> int:
             print(f"falloff_window_first_elapsed_seconds={_format_optional_float(first_elapsed)}")
             print(f"falloff_window_last_elapsed_seconds={_format_optional_float(last_elapsed)}")
             print(f"elapsed_duplicate_policy={args.elapsed_duplicate_policy}")
-            _print_derivative_readiness(
+
+            readiness_state = _derivative_readiness_state(
                 window=readiness_window,
                 stage=stage,
                 elapsed_all=readiness_elapsed,
                 g_time_all=readiness_g_time,
+            )
+            derivative_was_computed = False
+            if args.pressure_derivative_preview:
+                derivative_was_computed = _print_pressure_derivative_preview(
+                    readiness_state=readiness_state,
+                    count=args.pressure_derivative_count,
+                )
+            _print_derivative_readiness(
+                readiness_state,
+                derivative_was_computed=derivative_was_computed,
             )
 
     if args.picked_start_time is not None:
