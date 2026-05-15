@@ -1534,3 +1534,15 @@ manifest 必须显式给出：
 - Excel/PNG reporting
 
 readiness 不通过的 stage 不写 derivative CSV，只在 summary 中记录 blocker。
+
+## Phase 4E：README / AGENTS 当前工作流更新
+
+更新 README.md 和 AGENTS.md，使仓库入口反映当前实际能力：
+
+- `CHANGELOG.md` 是项目主记忆；
+- `notes/project-state.md` 仅为兼容指针；
+- 当前可运行入口包括 `window-audit` 和 `derivative-batch`；
+- 当前允许严格门控下的 dP/dG / G dP/dG 数值预览和 CSV 导出；
+- 当前仍不做 closure、smoothing、automatic bleedoff detection、resampling、Carter、PKN、volume balance、fracture inversion 或 Excel/PNG reporting。
+
+本阶段只更新文档，不修改源码或测试。

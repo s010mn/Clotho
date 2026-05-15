@@ -1,51 +1,117 @@
 # Feynman Project Guide
 
-This file is read automatically at startup. It is the durable project memory for Feynman.
+本文件是 Feynman 的执行约束。项目完整历史和阶段记录见根目录：
 
-## Project Overview
-- Project name: **Clotho: 基于停泵数据的压裂缝网参数评价方法研究**
-- Research context: 硕士毕业论文研究项目。
-- Core objective: 基于停泵数据/停泵压力响应，研究压裂缝网参数的评价与解释方法。
-- Target artifact: 学位论文、研究笔记、数据处理与方法验证代码。
-- Key source types: DFIT/停泵压力解释文献、压裂缝网参数评价方法、相关现场或公开示例数据。
+```text
+CHANGELOG.md
+```
 
-## AI Research Context
-- Problem statement: 如何从停泵数据中提取能够表征压裂缝网参数的信息，并形成可解释、可验证的评价方法。
-- Core hypothesis: 停泵后的压力响应包含与裂缝闭合、储层渗流、缝网导流能力和几何复杂度相关的信息，可用于约束压裂缝网参数评价。
-- Closest prior work: DFIT/G-function/合规性方法、压力衰减分析、压裂缝网解释与参数反演研究。
-- Required baselines: TODO: 根据文献综述确定。
-- Required ablations: TODO: 根据方法设计确定。
-- Primary metrics: TODO: 根据实验设计确定。
-- Datasets / benchmarks: TODO: 确定现场数据、公开数据或合成算例。
+compact 后、新会话恢复上下文、阶段验收和下一步规划，应优先读取：
 
-## Ground Rules
-- Do not modify raw data in `Data/Raw/` or equivalent raw-data folders.
-- Read first, act second: inspect project structure and existing notes before making changes.
-- Prefer durable artifacts in `notes/`, `outputs/`, `experiments/`, and `papers/`.
-- Keep strong claims source-grounded. Include direct URLs in final writeups.
+```text
+CHANGELOG.md
+```
 
-## Current Status
-- Replace this section with the latest project status, known issues, and next steps.
+旧路径：
 
-## Task Ledger
-- Track concrete tasks with IDs, owner, status, and output path.
-- Mark tasks as `todo`, `in_progress`, `done`, `blocked`, or `superseded`.
-- Do not silently merge or skip tasks; record the decision here.
+```text
+notes/project-state.md
+```
 
-## Verification Gates
-- List the checks that must pass before delivery.
-- For each critical claim, figure, or metric, record how it will be verified and where the raw artifact lives.
-- Do not use words like `verified`, `confirmed`, or `reproduced` unless the underlying check actually ran.
+只保留为兼容指针。
 
-## Honesty Contract
-- Separate direct observations from inferences.
-- If something is uncertain, say so explicitly.
-- If a result looks cleaner than expected, assume it needs another check before it goes into the final artifact.
+## Project overview
 
-## Session Logging
-- Use `/log` at the end of meaningful sessions to write a durable session note into `notes/session-logs/`.
+Clotho 是研究型 Python 代码库，服务于：
 
-## Review Readiness
-- Known reviewer concerns:
-- Missing experiments:
-- Missing writing or framing work:
+> 基于停泵数据 / 停泵压力响应的压裂缝网参数评价方法研究。
+
+当前目标是构建清晰、可复现、可审计的数据处理与 G-function / DFIT 分析管线。
+
+## Coding rules
+
+- 少文件、少抽象、可读性优先；
+- 读者是中国大陆石油工程硕士生，解释水平按本科一年级；
+- Python 变量名用英文；
+- 中文 docstring / 注释解释数据含义和物理含义；
+- 使用 `uv` 管理 Python 环境，不直接用 `pip`；
+- 可以用 `numpy`、`pandas`、`scipy`、`sympy` 等现成库减少样板代码；
+- 不提前创建空包、registry、factory、adapter 等工程抽象；
+- 只有文件明显过长且测试稳定时，才拆分模块。
+
+## Data rules
+
+不要提交：
+
+- `gfunc/`
+- `wells/`
+- `well4/`
+- `data/raw/`
+- 真实井数据
+- Excel/PNG 输出
+
+参考库和真实井数据只能放在仓库外，例如 `/tmp/...`，用于本地审计或 smoke。
+
+## Current allowed analysis
+
+当前允许在严格门控下计算：
+
+- `dP/dG`
+- `G dP/dG`
+
+但只能在：
+
+- 用户显式给出有效自然压降窗口；
+- 用户显式选择重复 elapsed 策略；
+- derivative-readiness 通过；
+- G-time 严格递增；
+- 压力列有限；
+
+这些条件满足后，作为数值预览或 CSV 输出。
+
+## Current forbidden scope
+
+仍然不要实现或声称已经完成：
+
+- closure diagnostics；
+- closure pressure picking；
+- ISIP / closure 自动解释；
+- pressure smoothing；
+- automatic active-bleedoff detection；
+- resampling；
+- Carter leakoff；
+- PKN；
+- stress-shadow；
+- volume balance；
+- fracture inversion；
+- Excel / PNG reporting。
+
+## Verification
+
+每个稳定小阶段必须：
+
+```bash
+uv sync
+uv run pytest -q
+uv run python -m clotho version
+```
+
+并做负向目录检查：
+
+```bash
+find . \
+  -path ./.git -prune -o \
+  -path ./.venv -prune -o \
+  -type d \( -name 'gfunc' -o -name 'wells' -o -name 'well4' -o -name 'data/raw' \) \
+  -print
+```
+
+预期负向检查为空。
+
+## Collaboration protocol
+
+- Feynman 本地执行文件读取、代码修改、测试和 commit；
+- GPT-5.5 Pro 负责架构判断、边界控制、下一阶段规划；
+- 每完成一个稳定小阶段，测试通过后 commit + push；
+- 回传 commit hash、测试结果、变更文件和 scope confirmation；
+- GPT-5.5 Pro 通过 GitHub 审查后再进入下一阶段。
