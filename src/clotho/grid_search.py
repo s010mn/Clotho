@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import math
 import time
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
@@ -50,6 +52,7 @@ ALLOWED_PERF_MODES = ("none", "constant", "orifice", "zero-after-shutin")
 ALLOWED_COUPLING = ("stage-constant", "shadow-scaled")
 ALLOWED_FLOW_ALLOCATION = ("stress-shadow", "uniform")
 ALLOWED_WINDOW_MODES = ("longest", "best-r2", "early-best")
+ALLOWED_PARALLEL_BACKENDS = ("thread", "process")
 
 # Targets used for correlation reporting. Built from observation column names
 # the user supplies (typically microseismic_affected_volume,
@@ -464,12 +467,56 @@ class PhysicalPlausibilityCriteria:
     min_n: int = 20
     max_placeholder_count: int = 2
     min_median_efficiency: float = 0.10
-    max_median_efficiency: float = 0.40
+    max_median_efficiency: float = 0.50
     max_efficiency_below_5pct_count: int = 5
+    min_finite_efficiency_count: int = 20
     min_pkn_ok_count: int = 25
     min_median_stable_r2: float = 0.5
     min_C_multiplier: float = 0.1
     max_C_multiplier: float = 2.0
+
+
+def fluid_efficiency_plausibility_pass(
+    stats: dict[str, Any],
+    criteria: PhysicalPlausibilityCriteria,
+) -> tuple[bool, list[str]]:
+    """Check PKN shut-in fluid efficiency plausibility only."""
+    reasons: list[str] = []
+    med_eff = stats.get("median_shutin_fluid_efficiency", float("nan"))
+    if not np.isfinite(med_eff):
+        reasons.append("median_efficiency_not_finite")
+    else:
+        if med_eff < criteria.min_median_efficiency:
+            reasons.append("median_efficiency_below_min")
+        if med_eff > criteria.max_median_efficiency:
+            reasons.append("median_efficiency_above_max")
+    if stats.get("count_efficiency_below_5pct", 0) > criteria.max_efficiency_below_5pct_count:
+        reasons.append("too_many_below_5pct")
+    finite_count = stats.get("finite_shutin_efficiency_count", 0)
+    if finite_count < criteria.min_finite_efficiency_count:
+        reasons.append(f"finite_efficiency_count_lt_{criteria.min_finite_efficiency_count}")
+    return (len(reasons) == 0, reasons)
+
+
+def fluid_efficiency_reconciliation_pass(
+    stats: dict[str, Any],
+    *,
+    max_median_abs_difference: float = 0.15,
+    min_consistent_count: int = 10,
+    min_finite_count: int = 20,
+) -> tuple[bool, list[str]]:
+    """Check PKN vs G-function efficiency reconciliation as a separate target."""
+    reasons: list[str] = []
+    med_abs_diff = stats.get("median_abs_efficiency_difference", float("nan"))
+    if not np.isfinite(med_abs_diff):
+        reasons.append("median_abs_efficiency_difference_not_finite")
+    elif med_abs_diff > max_median_abs_difference:
+        reasons.append("median_abs_efficiency_difference_above_max")
+    if stats.get("count_efficiency_consistent_within_0p1", 0) < min_consistent_count:
+        reasons.append(f"consistent_count_lt_{min_consistent_count}")
+    if stats.get("finite_efficiency_reconciliation_count", 0) < min_finite_count:
+        reasons.append(f"finite_reconciliation_count_lt_{min_finite_count}")
+    return (len(reasons) == 0, reasons)
 
 
 def physical_plausibility_pass(
@@ -483,16 +530,9 @@ def physical_plausibility_pass(
         reasons.append(f"n_lt_{criteria.min_n}")
     if stats.get("placeholder_count", 0) > criteria.max_placeholder_count:
         reasons.append(f"placeholder_count_gt_{criteria.max_placeholder_count}")
-    med_eff = stats.get("median_shutin_fluid_efficiency", float("nan"))
-    if not np.isfinite(med_eff):
-        reasons.append("median_efficiency_not_finite")
-    else:
-        if med_eff < criteria.min_median_efficiency:
-            reasons.append("median_efficiency_below_min")
-        if med_eff > criteria.max_median_efficiency:
-            reasons.append("median_efficiency_above_max")
-    if stats.get("count_efficiency_below_5pct", 0) > criteria.max_efficiency_below_5pct_count:
-        reasons.append("too_many_below_5pct")
+    efficiency_ok, efficiency_reasons = fluid_efficiency_plausibility_pass(stats, criteria)
+    if not efficiency_ok:
+        reasons.extend(efficiency_reasons)
     if stats.get("pkn_volume_ok_count", 0) < criteria.min_pkn_ok_count:
         reasons.append("pkn_ok_count_below_min")
     med_r2 = stats.get("median_stable_dP_dG_r2", float("nan"))
@@ -580,16 +620,64 @@ def evaluate_case_correlations(
 
     eff_col = "pkn_shutin_fluid_efficiency"
     if eff_col in summary.columns:
-        eff = summary[eff_col].astype(float)
-        median_eff = float(np.nanmedian(eff)) if eff.notna().any() else float("nan")
-        min_eff = float(np.nanmin(eff)) if eff.notna().any() else float("nan")
-        max_eff = float(np.nanmax(eff)) if eff.notna().any() else float("nan")
+        eff = pd.to_numeric(summary[eff_col], errors="coerce")
+        finite_eff = eff[np.isfinite(eff)]
+        median_eff = float(np.nanmedian(finite_eff)) if len(finite_eff) else float("nan")
+        min_eff = float(np.nanmin(finite_eff)) if len(finite_eff) else float("nan")
+        max_eff = float(np.nanmax(finite_eff)) if len(finite_eff) else float("nan")
+        finite_eff_count = int(len(finite_eff))
         below_5 = int((eff < 0.05).sum())
         in_band = int(((eff >= 0.10) & (eff <= 0.40)).sum())
     else:
         median_eff = min_eff = max_eff = float("nan")
+        finite_eff_count = 0
         below_5 = 0
         in_band = 0
+
+    g_eff_col = "g_function_closure_efficiency"
+    if g_eff_col in summary.columns:
+        g_eff = pd.to_numeric(summary[g_eff_col], errors="coerce")
+        finite_g_eff = g_eff[np.isfinite(g_eff)]
+        median_g_eff = float(np.nanmedian(finite_g_eff)) if len(finite_g_eff) else float("nan")
+    else:
+        g_eff = pd.Series([np.nan] * len(summary), index=summary.index)
+        median_g_eff = float("nan")
+
+    diff_col = "efficiency_difference_pkn_minus_g_function"
+    if diff_col in summary.columns:
+        diff = pd.to_numeric(summary[diff_col], errors="coerce")
+    else:
+        diff = eff - g_eff if eff_col in summary.columns else pd.Series([np.nan] * len(summary), index=summary.index)
+    finite_diff = diff[np.isfinite(diff)]
+    median_diff = float(np.nanmedian(finite_diff)) if len(finite_diff) else float("nan")
+    median_abs_diff = float(np.nanmedian(np.abs(finite_diff))) if len(finite_diff) else float("nan")
+
+    ratio_col = "efficiency_ratio_pkn_to_g_function"
+    if ratio_col in summary.columns:
+        ratio = pd.to_numeric(summary[ratio_col], errors="coerce")
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = eff / g_eff if eff_col in summary.columns else pd.Series([np.nan] * len(summary), index=summary.index)
+    finite_ratio = ratio[np.isfinite(ratio)]
+    median_ratio = float(np.nanmedian(finite_ratio)) if len(finite_ratio) else float("nan")
+
+    if "efficiency_reconciliation_warning" in summary.columns:
+        warnings = summary["efficiency_reconciliation_warning"].astype(str)
+        consistent_count = int((warnings == "efficiency_consistent_within_0p1").sum())
+        much_lower_count = int((warnings == "pkn_efficiency_much_lower_than_g_function_check_C").sum())
+    else:
+        consistent_count = int((np.abs(diff) <= 0.1).sum())
+        much_lower_count = int((diff < -0.2).sum())
+
+    c_mult_g_col = "pkn_C_multiplier_to_g_function_efficiency"
+    if c_mult_g_col in summary.columns:
+        c_mult_g = pd.to_numeric(summary[c_mult_g_col], errors="coerce")
+        finite_c_mult_g = c_mult_g[np.isfinite(c_mult_g)]
+        median_c_mult_to_g = float(np.nanmedian(finite_c_mult_g)) if len(finite_c_mult_g) else float("nan")
+        p25_c_mult_to_g = float(np.nanpercentile(finite_c_mult_g, 25)) if len(finite_c_mult_g) else float("nan")
+        p75_c_mult_to_g = float(np.nanpercentile(finite_c_mult_g, 75)) if len(finite_c_mult_g) else float("nan")
+    else:
+        median_c_mult_to_g = p25_c_mult_to_g = p75_c_mult_to_g = float("nan")
 
     if "stable_dP_dG_r2" in summary.columns:
         median_r2 = float(np.nanmedian(summary["stable_dP_dG_r2"].astype(float)))
@@ -615,16 +703,38 @@ def evaluate_case_correlations(
 
     eff_stats: dict[str, float] = {
         "median_shutin_fluid_efficiency": median_eff,
+        "median_pkn_shutin_efficiency": median_eff,
         "min_shutin_fluid_efficiency": min_eff,
         "max_shutin_fluid_efficiency": max_eff,
+        "finite_shutin_efficiency_count": finite_eff_count,
         "count_efficiency_below_5pct": below_5,
         "count_efficiency_in_band_10_40pct": in_band,
+        "median_g_function_closure_efficiency": median_g_eff,
+        "median_efficiency_difference": median_diff,
+        "median_abs_efficiency_difference": median_abs_diff,
+        "median_efficiency_ratio": median_ratio,
+        "count_efficiency_consistent_within_0p1": consistent_count,
+        "count_pkn_efficiency_much_lower_than_g_function": much_lower_count,
+        "finite_efficiency_reconciliation_count": int(len(finite_diff)),
+        "median_C_multiplier_to_g_function_efficiency": median_c_mult_to_g,
+        "p25_C_multiplier_to_g_function_efficiency": p25_c_mult_to_g,
+        "p75_C_multiplier_to_g_function_efficiency": p75_c_mult_to_g,
         "median_stable_dP_dG_r2": median_r2,
         "median_C_multiplier_to_20pct": median_c_mult_to_20,
         "placeholder_count": placeholder_count,
         "pkn_volume_ok_count": pkn_ok_count,
         "pkn_volume_failed_count": failed_count,
     }
+
+    eff_plausible, eff_plausible_reasons = fluid_efficiency_plausibility_pass(
+        eff_stats,
+        PhysicalPlausibilityCriteria(),
+    )
+    eff_reconcile, eff_reconcile_reasons = fluid_efficiency_reconciliation_pass(eff_stats)
+    eff_stats["fluid_efficiency_plausibility_pass"] = bool(eff_plausible)
+    eff_stats["fluid_efficiency_plausibility_reasons"] = ";".join(eff_plausible_reasons)
+    eff_stats["fluid_efficiency_reconciliation_pass"] = bool(eff_reconcile)
+    eff_stats["fluid_efficiency_reconciliation_reasons"] = ";".join(eff_reconcile_reasons)
 
     # Build correlations metric × target
     corr_rows: list[dict[str, Any]] = []
@@ -848,6 +958,17 @@ def _run_one_case(
             eff_stats[stat_name] = float("nan")
     stats_for_plausibility = dict(eff_stats)
     stats_for_plausibility["C_multiplier_applied"] = case.C_multiplier
+    eff_plausible, eff_plausible_reasons = fluid_efficiency_plausibility_pass(
+        stats_for_plausibility,
+        criteria,
+    )
+    eff_reconcile, eff_reconcile_reasons = fluid_efficiency_reconciliation_pass(
+        stats_for_plausibility
+    )
+    eff_stats["fluid_efficiency_plausibility_pass"] = bool(eff_plausible)
+    eff_stats["fluid_efficiency_plausibility_reasons"] = ";".join(eff_plausible_reasons)
+    eff_stats["fluid_efficiency_reconciliation_pass"] = bool(eff_reconcile)
+    eff_stats["fluid_efficiency_reconciliation_reasons"] = ";".join(eff_reconcile_reasons)
     physical_pass, fail_reasons = physical_plausibility_pass(stats_for_plausibility, criteria)
     elapsed = time.perf_counter() - start
     row = _flatten_case_row(
@@ -861,6 +982,26 @@ def _run_one_case(
     )
     row["error_message"] = ""
     return row, True
+
+
+def _run_one_case_process_task(
+    case: GridCase,
+    config: GridSearchConfig,
+    manifest: pd.DataFrame,
+    stage_params: pd.DataFrame,
+    observation_columns: Sequence[str],
+    criteria: PhysicalPlausibilityCriteria,
+) -> tuple[int, dict[str, Any], bool]:
+    row, ok = _run_one_case(
+        case=case,
+        config=config,
+        orifice_cache={},
+        manifest=manifest,
+        stage_params=stage_params,
+        observation_columns=observation_columns,
+        criteria=criteria,
+    )
+    return case.case_id, row, ok
 
 
 # ---------------------------------------------------------------------------
@@ -980,7 +1121,18 @@ def compute_parameter_importance(
     # Pick a representative set of correlation columns (top by mean abs Pearson)
     pearson_cols = [c for c in cases_df.columns if c.endswith("_pearson")]
     summary_cols = list(pearson_cols)
-    summary_cols += [c for c in ("median_shutin_fluid_efficiency", "median_stable_dP_dG_r2") if c in cases_df.columns]
+    summary_cols += [
+        c for c in (
+            "median_shutin_fluid_efficiency",
+            "median_g_function_closure_efficiency",
+            "median_efficiency_difference",
+            "median_abs_efficiency_difference",
+            "median_efficiency_ratio",
+            "median_C_multiplier_to_g_function_efficiency",
+            "median_stable_dP_dG_r2",
+        )
+        if c in cases_df.columns
+    ]
     rows: list[dict[str, Any]] = []
     for p in parameters:
         if p not in cases_df.columns:
@@ -1000,6 +1152,40 @@ def compute_parameter_importance(
                     entry[f"mean_{col}"] = float(grp[col].astype(float).mean(skipna=True))
             rows.append(entry)
     return pd.DataFrame.from_records(rows)
+
+
+def compute_fluid_efficiency_best_cases(cases_df: pd.DataFrame) -> pd.DataFrame:
+    """Sort grid cases by efficiency reconciliation before correlation strength."""
+    if cases_df.empty:
+        return pd.DataFrame()
+
+    out = cases_df.copy()
+    pearson_cols = [c for c in out.columns if c.endswith("_pearson")]
+    if pearson_cols:
+        out["selected_metric_correlation"] = out[pearson_cols].astype(float).max(axis=1, skipna=True)
+    else:
+        out["selected_metric_correlation"] = np.nan
+
+    if "fluid_efficiency_reconciliation_pass" not in out.columns:
+        out["fluid_efficiency_reconciliation_pass"] = False
+    if "physical_plausibility_pass" not in out.columns:
+        out["physical_plausibility_pass"] = False
+    if "median_abs_efficiency_difference" not in out.columns:
+        out["median_abs_efficiency_difference"] = np.nan
+    if "pkn_volume_ok_count" not in out.columns:
+        out["pkn_volume_ok_count"] = 0
+
+    return out.sort_values(
+        [
+            "fluid_efficiency_reconciliation_pass",
+            "physical_plausibility_pass",
+            "median_abs_efficiency_difference",
+            "pkn_volume_ok_count",
+            "selected_metric_correlation",
+        ],
+        ascending=[False, False, True, False, False],
+        ignore_index=True,
+    )
 
 
 def _relative_range(values: pd.Series) -> float:
@@ -1124,6 +1310,10 @@ def write_outputs(
     cases_df.to_csv(cases_path, index=False)
     paths["grid_cases"] = cases_path
 
+    fluid_cases_path = output_dir / "fluid_efficiency_grid_cases.csv"
+    cases_df.to_csv(fluid_cases_path, index=False)
+    paths["fluid_efficiency_grid_cases"] = fluid_cases_path
+
     outputs = split_outputs(cases_df)
     pos_path = output_dir / "grid_positive_candidates.csv"
     outputs["grid_positive_candidates"].to_csv(pos_path, index=False)
@@ -1141,6 +1331,15 @@ def write_outputs(
     importance_path = output_dir / "grid_parameter_importance.csv"
     importance.to_csv(importance_path, index=False)
     paths["grid_parameter_importance"] = importance_path
+
+    fluid_importance_path = output_dir / "fluid_efficiency_parameter_importance.csv"
+    importance.to_csv(fluid_importance_path, index=False)
+    paths["fluid_efficiency_parameter_importance"] = fluid_importance_path
+
+    fluid_best = compute_fluid_efficiency_best_cases(cases_df)
+    fluid_best_path = output_dir / "fluid_efficiency_best_cases.csv"
+    fluid_best.to_csv(fluid_best_path, index=False)
+    paths["fluid_efficiency_best_cases"] = fluid_best_path
 
     failed_path = output_dir / "grid_failed_cases.csv"
     failed_df.to_csv(failed_path, index=False)
@@ -1168,6 +1367,8 @@ def run_grid_search(
     grid_kwargs: dict[str, Any],
     max_cases: int,
     criteria: PhysicalPlausibilityCriteria | None = None,
+    workers: int = 1,
+    parallel_backend: str = "thread",
     progress_callback=None,
 ) -> dict[str, Any]:
     """Run the full grid search.
@@ -1177,6 +1378,12 @@ def run_grid_search(
     """
     if criteria is None:
         criteria = PhysicalPlausibilityCriteria()
+    if workers < 1:
+        raise ValueError(f"workers must be >= 1, got {workers}")
+    if parallel_backend not in ALLOWED_PARALLEL_BACKENDS:
+        raise ValueError(
+            f"parallel_backend must be one of {ALLOWED_PARALLEL_BACKENDS}, got {parallel_backend}"
+        )
     total = count_grid_cases(**grid_kwargs)
     if total > max_cases:
         raise ValueError(
@@ -1189,28 +1396,80 @@ def run_grid_search(
     observations = pd.read_csv(config.observations_path)
     observation_columns = [c for c in observations.columns if c != "stage"]
 
-    orifice_cache: dict[tuple, dict[str, float | dict[int, float]]] = {}
+    cases = list(enumerate_grid_cases(**grid_kwargs))
+    case_rows_by_id: dict[int, dict[str, Any]] = {}
+    failed_rows_by_id: dict[int, dict[str, Any]] = {}
 
-    case_rows: list[dict[str, Any]] = []
-    failed_rows: list[dict[str, Any]] = []
-
-    for i, case in enumerate(enumerate_grid_cases(**grid_kwargs)):
-        row, ok = _run_one_case(
-            case=case,
-            config=config,
-            orifice_cache=orifice_cache,
-            manifest=manifest,
-            stage_params=stage_params,
-            observation_columns=observation_columns,
-            criteria=criteria,
-        )
+    def _record(case_id: int, row: dict[str, Any], ok: bool, completed: int) -> None:
         if ok:
-            case_rows.append(row)
+            case_rows_by_id[case_id] = row
         else:
-            failed_rows.append(row)
+            failed_rows_by_id[case_id] = row
         if progress_callback is not None:
-            progress_callback(i + 1, total, row)
+            progress_callback(completed, total, row)
 
+    if workers == 1:
+        orifice_cache: dict[tuple, dict[str, float | dict[int, float]]] = {}
+        for i, case in enumerate(cases):
+            row, ok = _run_one_case(
+                case=case,
+                config=config,
+                orifice_cache=orifice_cache,
+                manifest=manifest,
+                stage_params=stage_params,
+                observation_columns=observation_columns,
+                criteria=criteria,
+            )
+            _record(case.case_id, row, ok, i + 1)
+    else:
+        # Each worker gets its own tiny orifice cache. This avoids shared mutable
+        # state while keeping case execution independent and order-restored.
+        def _run_parallel_case(case: GridCase) -> tuple[int, dict[str, Any], bool]:
+            row, ok = _run_one_case(
+                case=case,
+                config=config,
+                orifice_cache={},
+                manifest=manifest,
+                stage_params=stage_params,
+                observation_columns=observation_columns,
+                criteria=criteria,
+            )
+            return case.case_id, row, ok
+
+        executor_cls = ThreadPoolExecutor if parallel_backend == "thread" else ProcessPoolExecutor
+        completed = 0
+        with executor_cls(max_workers=workers) as executor:
+            if parallel_backend == "thread":
+                future_to_case_id = {
+                    executor.submit(_run_parallel_case, case): case.case_id
+                    for case in cases
+                }
+            else:
+                future_to_case_id = {
+                    executor.submit(
+                        _run_one_case_process_task,
+                        case,
+                        config,
+                        manifest,
+                        stage_params,
+                        observation_columns,
+                        criteria,
+                    ): case.case_id
+                    for case in cases
+                }
+            for future in as_completed(future_to_case_id):
+                case_id = future_to_case_id[future]
+                try:
+                    finished_case_id, row, ok = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    row = {"case_id": case_id, "error_message": str(exc)}
+                    ok = False
+                    finished_case_id = case_id
+                completed += 1
+                _record(finished_case_id, row, ok, completed)
+
+    case_rows = [case_rows_by_id[k] for k in sorted(case_rows_by_id)]
+    failed_rows = [failed_rows_by_id[k] for k in sorted(failed_rows_by_id)]
     cases_df = pd.DataFrame.from_records(case_rows) if case_rows else pd.DataFrame()
     failed_df = pd.DataFrame.from_records(failed_rows) if failed_rows else pd.DataFrame()
     paths = write_outputs(config.output_dir, cases_df, failed_df)

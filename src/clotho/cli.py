@@ -13,6 +13,7 @@ from clotho.closure import run_closure_batch, write_closure_batch_outputs
 from clotho.grid_search import (
     ALLOWED_COUPLING,
     ALLOWED_FLOW_ALLOCATION,
+    ALLOWED_PARALLEL_BACKENDS,
     ALLOWED_PERF_MODES,
     ALLOWED_WINDOW_MODES,
     GridSearchConfig,
@@ -288,6 +289,8 @@ def build_parser() -> argparse.ArgumentParser:
     grid.add_argument("--elapsed-duplicate-policy", choices=["none", "keep-first", "keep-last", "mean"], default="keep-last")
     grid.add_argument("--well", default=None)
     grid.add_argument("--max-cases", type=int, default=200000, help="Cap on total grid size; refuse to run if exceeded (no silent sampling).")
+    grid.add_argument("--workers", type=int, default=1, help="Number of parallel grid cases to run. Default 1 preserves serial behavior.")
+    grid.add_argument("--parallel-backend", choices=ALLOWED_PARALLEL_BACKENDS, default="thread", help="Parallel executor backend for --workers > 1.")
     grid.add_argument("--closure-min-elapsed-grid", default="15,30,60")
     grid.add_argument("--pkn-C-coupling-grid", default="stage-constant,shadow-scaled")
     grid.add_argument("--flow-allocation-grid", default="stress-shadow,uniform")
@@ -311,7 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
     grid.add_argument("--plausibility-min-n", type=int, default=20)
     grid.add_argument("--plausibility-max-placeholder", type=int, default=2)
     grid.add_argument("--plausibility-min-eff", type=float, default=0.10)
-    grid.add_argument("--plausibility-max-eff", type=float, default=0.40)
+    grid.add_argument("--plausibility-max-eff", type=float, default=0.50)
     grid.add_argument("--plausibility-max-below-5pct", type=int, default=5)
     grid.add_argument("--plausibility-min-pkn-ok", type=int, default=25)
     grid.add_argument("--plausibility-min-r2", type=float, default=0.5)
@@ -1022,6 +1025,8 @@ def _run_pkn_grid_search(args: argparse.Namespace) -> int:
         grid_kwargs=grid_kwargs,
         max_cases=args.max_cases,
         criteria=criteria,
+        workers=args.workers,
+        parallel_backend=args.parallel_backend,
         progress_callback=_progress,
     )
     paths = result["output_paths"]

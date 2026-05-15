@@ -13,8 +13,11 @@ from clotho.closure import (
     K_lp,
     PHYSICAL_PKN_IF,
     build_observation_correlation_table,
+    compute_C_multiplier_to_fluid_efficiency,
     compute_flow_allocation_eta,
+    compute_g_function_closure_efficiency,
     compute_physical_leakoff_C,
+    reconcile_fluid_efficiencies,
     compute_stress_shadow,
     effective_volume_correction,
     legacy_mvp_pkn_volume_balance_estimate,
@@ -1733,6 +1736,47 @@ class TestFluidEfficiencyAudit:
             f"must be lower than shutin_fluid_efficiency ({result['pkn_shutin_fluid_efficiency']})"
         )
 
+    def test_g_function_closure_efficiency_formula(self):
+        result_3 = compute_g_function_closure_efficiency(3.0)
+        assert result_3["g_function_closure_efficiency"] == pytest.approx(0.6)
+        assert result_3["g_function_closure_efficiency_formula"] == "eta_G = G_c / (G_c + 2)"
+        assert result_3["g_function_closure_efficiency_status"] == "ok"
+
+        result_30 = compute_g_function_closure_efficiency(30.0)
+        assert result_30["g_function_closure_efficiency"] == pytest.approx(0.9375)
+        assert result_30["g_function_closure_efficiency_status"] == "ok"
+
+    @pytest.mark.parametrize("g_time", [None, np.nan, 0.0, -1.0])
+    def test_g_function_closure_efficiency_invalid_g_time(self, g_time):
+        result = compute_g_function_closure_efficiency(g_time)
+        assert np.isnan(result["g_function_closure_efficiency"])
+        assert result["g_function_closure_efficiency_formula"] == "eta_G = G_c / (G_c + 2)"
+        assert result["g_function_closure_efficiency_status"] == "invalid_closure_g_time"
+
+    def test_efficiency_reconciliation_warnings(self):
+        consistent = reconcile_fluid_efficiencies(0.25, 0.30)
+        assert consistent["efficiency_difference_pkn_minus_g_function"] == pytest.approx(-0.05)
+        assert consistent["efficiency_ratio_pkn_to_g_function"] == pytest.approx(0.25 / 0.30)
+        assert consistent["efficiency_reconciliation_warning"] == "efficiency_consistent_within_0p1"
+
+        lower = reconcile_fluid_efficiencies(0.08, 0.40)
+        assert lower["efficiency_difference_pkn_minus_g_function"] == pytest.approx(-0.32)
+        assert lower["efficiency_reconciliation_warning"] == (
+            "pkn_efficiency_much_lower_than_g_function_check_C"
+        )
+
+    def test_C_multiplier_to_g_function_efficiency_formula(self):
+        assert compute_C_multiplier_to_fluid_efficiency(
+            storage_unit=2.0,
+            leakoff_unit=8.0,
+            target_efficiency=0.2,
+        ) == pytest.approx(1.0)
+        assert compute_C_multiplier_to_fluid_efficiency(
+            storage_unit=2.0,
+            leakoff_unit=8.0,
+            target_efficiency=0.4,
+        ) == pytest.approx(3.0 / 8.0)
+
     def test_low_shutin_efficiency_warning(self):
         """When shut-in efficiency falls below 10%, warning must label it."""
         # Make C large and P_net small to drive shut-in efficiency low.
@@ -1849,6 +1893,10 @@ class TestFluidEfficiencyAudit:
         for col in [
             "pkn_shutin_fluid_efficiency",
             "pkn_stable_storage_fraction",
+            "g_function_closure_efficiency",
+            "efficiency_difference_pkn_minus_g_function",
+            "efficiency_reconciliation_warning",
+            "pkn_C_multiplier_to_g_function_efficiency",
             "pkn_C_multiplier_to_20pct_shutin_efficiency",
             "pkn_C_multiplier_to_10pct_shutin_efficiency",
             "pkn_fluid_efficiency_warning",

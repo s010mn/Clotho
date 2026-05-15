@@ -234,3 +234,32 @@ effective_volume_factor / wellbore_storage / 射孔摩阻 (4 modes) / 稳定段 
 - 网格搜索 CSV 都放在 `/tmp/gfunction-ref-audit-phase5f*/`，不提交；
 - 真正下结论之前，再对 robust candidate 做手工 plot review（G·dP/dG vs G，
   observation vs metric 散点）以排除单 stage outlier 主导。
+
+## 28. Phase 5H fluid efficiency reconciliation 后续
+
+Phase 5H 新增 G-function closure-derived efficiency：
+
+```text
+eta_G = G_c / (G_c + 2)
+```
+
+well4 baseline 中：
+
+- PKN shut-in efficiency median ~0.079；
+- G-function closure-derived efficiency median ~0.053；
+- median(PKN-G) ~+0.028；
+- `pkn_C_multiplier_to_g_function_efficiency` median ~1.20；
+- 27/28 computed stages 在 `abs(PKN-G) <= 0.1` 内。
+
+这说明当前 PKN efficiency 和 G-function efficiency 多数一致但都偏低，不能直接把
+效率调到 20% 来追求相关性。20% 只能作为 sanity reference。
+
+需要继续做：
+
+- 人工复核 selected closure G-time，尤其低 Gc 是否来自 early closure pick；
+- 对 stage 5、17、29 等低效率 / 高 C_stage 段复核 stable P-vs-G 选段；
+- 对 `C_multiplier_to_g_function_efficiency` 显著偏离 1 的 stage 做单段 plot audit；
+- 若要跑 Phase 5H 全建议 grid（129,600 cases），先做 stage-level cache 或进一步压缩轴；
+- 当前已实现 `pkn-grid-search --workers` 和 `--parallel-backend {thread,process}`，
+  但 full grid 仍不应硬跑或冒充完成；
+- 不修改 I_F，不修改 H_w 默认，不把 20% 当固定真值。

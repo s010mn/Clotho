@@ -63,8 +63,11 @@ stage 参数表
   - 正相关候选：Pearson > 0.3（且 n ≥ 20）；robust 再叠加 Spearman > 0.2 + 物理可信；
   - 输出 `grid_cases.csv` / `grid_positive_candidates.csv` /
     `grid_robust_positive_candidates.csv` / `grid_best_by_target.csv` /
-    `grid_parameter_importance.csv` / `grid_failed_cases.csv`；
+    `grid_parameter_importance.csv` / `grid_failed_cases.csv`，Phase 5H 另输出
+    `fluid_efficiency_grid_cases.csv` / `fluid_efficiency_best_cases.csv` /
+    `fluid_efficiency_parameter_importance.csv`；
   - `--max-cases` 硬上限：超过则报错（不做 silent random sampling）；
+  - `--workers` 与 `--parallel-backend {thread,process}` 可并行执行 grid cases；
   - I_F = 0.722464726919 不进入搜索空间；H_w 默认 50 m，可用
     `--pkn-Hw-grid` 做 30-60 m sensitivity；
   - 结果是 sensitivity audit，不是最终物理解释。

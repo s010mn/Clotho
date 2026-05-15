@@ -3556,3 +3556,116 @@ Scope confirmation:
 - no `/tmp` CSV/PNG committed；
 - no push master；
 - no validation claim.
+
+## Phase 5H：fluid efficiency calibration and reconciliation
+
+Phase 5H moved fluid efficiency from a loose grid filter to an explicit
+calibration / reconciliation target.
+
+Implementation:
+
+- `closure-batch` summary now includes G-function closure-derived efficiency:
+  - `g_function_closure_efficiency`
+  - `g_function_closure_efficiency_formula`
+  - `g_function_closure_efficiency_status`
+  - `g_function_closure_efficiency_source_note`
+- Formula recorded in output:
+
+```text
+eta_G = G_c / (G_c + 2)
+```
+
+- Added PKN vs G-function reconciliation fields:
+  - `efficiency_ratio_pkn_to_g_function`
+  - `efficiency_difference_pkn_minus_g_function`
+  - `efficiency_reconciliation_warning`
+- Added per-stage target multiplier:
+  - `pkn_C_multiplier_to_g_function_efficiency`
+- `pkn-grid-search` now records:
+  - `median_g_function_closure_efficiency`
+  - `median_pkn_shutin_efficiency`
+  - `median_efficiency_difference`
+  - `median_abs_efficiency_difference`
+  - `median_efficiency_ratio`
+  - `count_efficiency_consistent_within_0p1`
+  - `count_pkn_efficiency_much_lower_than_g_function`
+  - `fluid_efficiency_plausibility_pass`
+  - `fluid_efficiency_reconciliation_pass`
+  - `median_C_multiplier_to_g_function_efficiency`
+  - `p25_C_multiplier_to_g_function_efficiency`
+  - `p75_C_multiplier_to_g_function_efficiency`
+- `physical_plausibility_pass` now includes the fluid-efficiency plausibility
+  dimension, but reconciliation pass is reported separately and is not required.
+- Added fluid-efficiency output aliases:
+  - `fluid_efficiency_grid_cases.csv`
+  - `fluid_efficiency_best_cases.csv`
+  - `fluid_efficiency_parameter_importance.csv`
+
+Performance implementation:
+
+- Added `pkn-grid-search --workers N`.
+- Added `--parallel-backend {thread,process}`.
+- Optimized stable P-vs-G segment fitting with prefix-sum linear regression
+  instead of repeated `np.polyfit` over every candidate window.
+- Baseline well4 closure-batch timing after optimization: about 4.1 s for 30
+  rows / 28 computed PKN rows.
+- 4-case process-backend smoke grid completed in about 19.5 s.
+- Full Phase 5H suggested grid size is 129,600 cases, so it was not hard-run
+  inside this commit. The current implementation supports parallel execution,
+  but a full grid still needs narrower axes or stage-level caching.
+
+Real well4 baseline audit outside repo:
+
+```text
+output_dir: /tmp/gfunction-ref-audit-phase5h/
+rows: 30
+computed PKN rows: 28
+placeholder stages: 4,25
+
+pkn_shutin_fluid_efficiency: min=0.005, median=0.079, max=0.256
+g_function_closure_efficiency: min=0.008, median=0.053, max=0.089
+median efficiency difference PKN-G: +0.028
+efficiency_ratio_pkn_to_g_function median: 1.513
+pkn_C_multiplier_to_g_function_efficiency median: 1.200
+
+warnings:
+efficiency_consistent_within_0p1: 27
+missing_efficiency_reference: 2
+pkn_efficiency_much_higher_than_g_function_check_storage: 1
+```
+
+Interpretation recorded:
+
+- Current PKN shut-in efficiency and G-function closure-derived efficiency are
+  mostly consistent within 0.1.
+- Both are low in the baseline, so low efficiency cannot be solved by simply
+  forcing PKN efficiency to 20%.
+- Median `C_multiplier_to_g_function_efficiency` near 1 suggests current
+  C_stage is not obviously too large relative to the selected G-function
+  closure efficiency.
+
+Reduced fluid-efficiency grid smoke outside repo:
+
+```text
+output_dir: /tmp/gfunction-ref-audit-phase5h/grid/
+cases run: 4
+cases ok: 4
+best efficiency-consistent case: C_multiplier=0.5, stable_window_mode=longest
+median PKN efficiency: 0.144
+median G-function efficiency: 0.053
+median abs efficiency difference: 0.091
+fluid_efficiency_reconciliation_pass: True
+physical_plausibility_pass: True
+storage vs microseismic Pearson: -0.228
+leakoff/nonstorage vs EM Pearson: +0.453
+```
+
+Scope confirmation:
+
+- no formula default changes；
+- no I_F change；
+- no H_w default change；
+- no real data added to repo；
+- no `/tmp` CSV/PNG committed；
+- no push master；
+- no validation claim.

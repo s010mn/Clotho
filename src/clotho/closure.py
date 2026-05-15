@@ -43,6 +43,101 @@ from clotho.stage_data import (
 )
 
 _REQUIRED_MANIFEST_COLUMNS = {"stage", "max_sustained_rate", "valid_falloff_end_elapsed"}
+G_FUNCTION_CLOSURE_EFFICIENCY_FORMULA = "eta_G = G_c / (G_c + 2)"
+G_FUNCTION_CLOSURE_EFFICIENCY_SOURCE_NOTE = (
+    "depends_on_G_function_convention_and_selected_closure_pick;"
+    "calibration_cross_check_not_unique_truth"
+)
+
+
+def compute_g_function_closure_efficiency(selected_closure_g_time: float | None) -> dict[str, Any]:
+    """用 selected closure 的 G-time 计算 G-function closure-derived efficiency。
+
+    η_G = G_c / (G_c + 2)。这里的 G_c 是 selected_closure_g_time。
+    这个效率用于 calibration / cross-check，不是唯一真值。
+    """
+    result: dict[str, Any] = {
+        "g_function_closure_efficiency": np.nan,
+        "g_function_closure_efficiency_formula": G_FUNCTION_CLOSURE_EFFICIENCY_FORMULA,
+        "g_function_closure_efficiency_status": "invalid_closure_g_time",
+        "g_function_closure_efficiency_source_note": G_FUNCTION_CLOSURE_EFFICIENCY_SOURCE_NOTE,
+    }
+    if selected_closure_g_time is None:
+        return result
+    try:
+        g_c = float(selected_closure_g_time)
+    except (TypeError, ValueError):
+        return result
+    if not np.isfinite(g_c) or g_c <= 0:
+        return result
+    result["g_function_closure_efficiency"] = float(g_c / (g_c + 2.0))
+    result["g_function_closure_efficiency_status"] = "ok"
+    return result
+
+
+def reconcile_fluid_efficiencies(
+    pkn_shutin_fluid_efficiency: float | None,
+    g_function_closure_efficiency: float | None,
+) -> dict[str, Any]:
+    """对照 PKN shut-in efficiency 和 G-function closure-derived efficiency。"""
+    out: dict[str, Any] = {
+        "efficiency_ratio_pkn_to_g_function": np.nan,
+        "efficiency_difference_pkn_minus_g_function": np.nan,
+        "efficiency_reconciliation_warning": "missing_efficiency_reference",
+    }
+    try:
+        pkn_eff = float(pkn_shutin_fluid_efficiency)
+        g_eff = float(g_function_closure_efficiency)
+    except (TypeError, ValueError):
+        return out
+    if not (np.isfinite(pkn_eff) and np.isfinite(g_eff) and g_eff > 0):
+        return out
+
+    diff = pkn_eff - g_eff
+    out["efficiency_ratio_pkn_to_g_function"] = float(pkn_eff / g_eff)
+    out["efficiency_difference_pkn_minus_g_function"] = float(diff)
+
+    if abs(diff) <= 0.1:
+        warning = "efficiency_consistent_within_0p1"
+    elif diff < -0.2:
+        warning = "pkn_efficiency_much_lower_than_g_function_check_C"
+    elif diff > 0.2:
+        warning = "pkn_efficiency_much_higher_than_g_function_check_storage"
+    else:
+        warning = "efficiency_difference_between_0p1_and_0p2"
+    out["efficiency_reconciliation_warning"] = warning
+    return out
+
+
+def compute_C_multiplier_to_fluid_efficiency(
+    *,
+    storage_unit: float | None,
+    leakoff_unit: float | None,
+    target_efficiency: float | None,
+) -> float:
+    """求把当前 leakoff unit 调到目标 fluid efficiency 所需的 C multiplier。
+
+    target_eff = S / (S + L_target)
+    L_target = S * (1 / target_eff - 1)
+    C_multiplier = L_target / L_current
+    """
+    try:
+        storage = float(storage_unit)
+        leakoff = float(leakoff_unit)
+        target = float(target_efficiency)
+    except (TypeError, ValueError):
+        return float("nan")
+    if not (
+        np.isfinite(storage)
+        and np.isfinite(leakoff)
+        and np.isfinite(target)
+        and storage > 0
+        and leakoff > 0
+        and 0 < target < 1
+    ):
+        return float("nan")
+    leakoff_unit_target = storage * (1.0 / target - 1.0)
+    return float(leakoff_unit_target / leakoff)
 
 
 def _curve_continuous_seconds(curve: pd.DataFrame) -> np.ndarray:
@@ -598,6 +693,38 @@ def compute_stress_shadow(
     return result
 
 
+def _prefix_linear_fit_stats(
+    prefix_x: np.ndarray,
+    prefix_y: np.ndarray,
+    prefix_x2: np.ndarray,
+    prefix_y2: np.ndarray,
+    prefix_xy: np.ndarray,
+    start: int,
+    end: int,
+) -> tuple[float, float, float] | None:
+    """Return slope/intercept/r2 for compact arrays[start:end], end exclusive."""
+    n = end - start
+    if n < 2:
+        return None
+
+    sx = float(prefix_x[end] - prefix_x[start])
+    sy = float(prefix_y[end] - prefix_y[start])
+    sx2 = float(prefix_x2[end] - prefix_x2[start])
+    sy2 = float(prefix_y2[end] - prefix_y2[start])
+    sxy = float(prefix_xy[end] - prefix_xy[start])
+
+    sxx = sx2 - sx * sx / n
+    syy = sy2 - sy * sy / n
+    if sxx <= 0 or syy <= 0:
+        return None
+
+    sxy_centered = sxy - sx * sy / n
+    slope = sxy_centered / sxx
+    intercept = sy / n - slope * sx / n
+    r2 = (sxy_centered * sxy_centered) / (sxx * syy)
+    return float(slope), float(intercept), float(min(max(r2, 0.0), 1.0))
+
+
 def pick_stable_pressure_g_segment(
     g_time: np.ndarray,
     pressure_mpa: np.ndarray,
@@ -643,6 +770,14 @@ def pick_stable_pressure_g_segment(
     if len(valid_idx) < min_points:
         return failed
 
+    g_valid = g_time[valid_idx].astype(float)
+    p_valid = pressure_mpa[valid_idx].astype(float)
+    prefix_x = np.concatenate(([0.0], np.cumsum(g_valid)))
+    prefix_y = np.concatenate(([0.0], np.cumsum(p_valid)))
+    prefix_x2 = np.concatenate(([0.0], np.cumsum(g_valid * g_valid)))
+    prefix_y2 = np.concatenate(([0.0], np.cumsum(p_valid * p_valid)))
+    prefix_xy = np.concatenate(([0.0], np.cumsum(g_valid * p_valid)))
+
     if window_mode == "longest":
         best_start = -1
         best_end = -1
@@ -653,23 +788,22 @@ def pick_stable_pressure_g_segment(
 
         for window_len in range(len(valid_idx), min_points - 1, -1):
             for start_pos in range(len(valid_idx) - window_len + 1):
-                seg = valid_idx[start_pos: start_pos + window_len]
-                g_seg = g_time[seg]
-                p_seg = pressure_mpa[seg]
-
-                if len(np.unique(g_seg)) < 2:
+                stats = _prefix_linear_fit_stats(
+                    prefix_x,
+                    prefix_y,
+                    prefix_x2,
+                    prefix_y2,
+                    prefix_xy,
+                    start_pos,
+                    start_pos + window_len,
+                )
+                if stats is None:
                     continue
-
-                coeffs = np.polyfit(g_seg, p_seg, 1)
-                slope, intercept = float(coeffs[0]), float(coeffs[1])
-                p_pred = slope * g_seg + intercept
-                ss_res = float(np.sum((p_seg - p_pred) ** 2))
-                ss_tot = float(np.sum((p_seg - np.mean(p_seg)) ** 2))
-                r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+                slope, intercept, r2 = stats
 
                 if r2 >= min_r2 and window_len > best_n:
-                    best_start = int(seg[0])
-                    best_end = int(seg[-1])
+                    best_start = int(valid_idx[start_pos])
+                    best_end = int(valid_idx[start_pos + window_len - 1])
                     best_n = window_len
                     best_r2 = r2
                     best_slope = slope
@@ -693,39 +827,49 @@ def pick_stable_pressure_g_segment(
             "stable_segment_point_count": best_n,
         }
 
-    # best-r2 / early-best: enumerate all qualifying windows then choose
-    candidates: list[tuple[int, int, int, float, float, float]] = []
+    # best-r2 / early-best: enumerate qualifying windows using prefix-sum
+    # regression, then keep only the best all-window and early-window candidate.
+    best_all: tuple[int, int, int, float, float, float] | None = None
+    best_early: tuple[int, int, int, float, float, float] | None = None
+    early_cutoff = int(valid_idx[len(valid_idx) // 2])
     for window_len in range(min_points, len(valid_idx) + 1):
         for start_pos in range(len(valid_idx) - window_len + 1):
-            seg = valid_idx[start_pos: start_pos + window_len]
-            g_seg = g_time[seg]
-            p_seg = pressure_mpa[seg]
-            if len(np.unique(g_seg)) < 2:
+            stats = _prefix_linear_fit_stats(
+                prefix_x,
+                prefix_y,
+                prefix_x2,
+                prefix_y2,
+                prefix_xy,
+                start_pos,
+                start_pos + window_len,
+            )
+            if stats is None:
                 continue
-            coeffs = np.polyfit(g_seg, p_seg, 1)
-            slope, intercept = float(coeffs[0]), float(coeffs[1])
+            slope, intercept, r2 = stats
             if slope >= 0:
                 continue
-            p_pred = slope * g_seg + intercept
-            ss_res = float(np.sum((p_seg - p_pred) ** 2))
-            ss_tot = float(np.sum((p_seg - np.mean(p_seg)) ** 2))
-            r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
             if r2 < min_r2:
                 continue
-            candidates.append((int(seg[0]), int(seg[-1]), window_len, r2, slope, intercept))
+            candidate = (
+                int(valid_idx[start_pos]),
+                int(valid_idx[start_pos + window_len - 1]),
+                window_len,
+                r2,
+                slope,
+                intercept,
+            )
+            if best_all is None or r2 > best_all[3]:
+                best_all = candidate
+            if candidate[0] <= early_cutoff and (best_early is None or r2 > best_early[3]):
+                best_early = candidate
 
-    if not candidates:
+    if best_all is None:
         return failed
 
     if window_mode == "best-r2":
-        best = max(candidates, key=lambda c: c[3])
+        best = best_all
     else:  # early-best
-        early_cutoff = int(valid_idx[len(valid_idx) // 2])
-        early = [c for c in candidates if c[0] <= early_cutoff]
-        if early:
-            best = max(early, key=lambda c: c[3])
-        else:
-            best = max(candidates, key=lambda c: c[3])
+        best = best_early if best_early is not None else best_all
 
     best_start, best_end, best_n, best_r2, best_slope, best_intercept = best
     return {
@@ -918,6 +1062,7 @@ def physical_pkn_volume_balance(
             "pkn_shutin_preclosure_leakoff_unit_fraction": np.nan,
             "pkn_C_multiplier_to_20pct_shutin_efficiency": np.nan,
             "pkn_C_multiplier_to_10pct_shutin_efficiency": np.nan,
+            "pkn_C_multiplier_to_g_function_efficiency": np.nan,
             "pkn_fluid_efficiency_warning": "",
             "pkn_C_stage_units_assumed": "",
             "pkn_tp_seconds": np.nan,
@@ -1206,19 +1351,16 @@ def physical_pkn_volume_balance(
     # If target_eff = storage_unit / (storage_unit + leakoff_unit_target),
     # then leakoff_unit_target = storage_unit * (1/target_eff - 1),
     # and C_multiplier = leakoff_unit_target / current_leakoff_unit (since leakoff_unit_i ∝ C_stage).
-    def _c_mult(target: float) -> float:
-        if not (
-            np.isfinite(shutin_storage_unit_mean)
-            and np.isfinite(shutin_preclosure_leakoff_unit_mean)
-            and shutin_preclosure_leakoff_unit_mean > 0
-            and 0 < target < 1
-        ):
-            return float("nan")
-        leakoff_unit_target = shutin_storage_unit_mean * (1.0 / target - 1.0)
-        return float(leakoff_unit_target / shutin_preclosure_leakoff_unit_mean)
-
-    c_mult_20 = _c_mult(0.20)
-    c_mult_10 = _c_mult(0.10)
+    c_mult_20 = compute_C_multiplier_to_fluid_efficiency(
+        storage_unit=shutin_storage_unit_mean,
+        leakoff_unit=shutin_preclosure_leakoff_unit_mean,
+        target_efficiency=0.20,
+    )
+    c_mult_10 = compute_C_multiplier_to_fluid_efficiency(
+        storage_unit=shutin_storage_unit_mean,
+        leakoff_unit=shutin_preclosure_leakoff_unit_mean,
+        target_efficiency=0.10,
+    )
 
     # Phase 5D.6 efficiency warning (sanity check label, not a physical conclusion)
     if not np.isfinite(shutin_fluid_efficiency):
@@ -1311,6 +1453,7 @@ def physical_pkn_volume_balance(
             if np.isfinite(shutin_preclosure_leakoff_unit_fraction) else np.nan,
         "pkn_C_multiplier_to_20pct_shutin_efficiency": c_mult_20,
         "pkn_C_multiplier_to_10pct_shutin_efficiency": c_mult_10,
+        "pkn_C_multiplier_to_g_function_efficiency": np.nan,
         "pkn_fluid_efficiency_warning": efficiency_warning,
         "pkn_tp_seconds": float(tp_seconds),
         "pkn_sqrt_tp_seconds": float(sqrt_tp),
@@ -1612,6 +1755,10 @@ def _process_stage(
 
     selected = select_closure_candidate(barree, mcclure, preference=method_preference)
     row.update(selected)
+    g_function_efficiency = compute_g_function_closure_efficiency(
+        selected.get("selected_closure_g_time")
+    )
+    row.update(g_function_efficiency)
 
     p_shut_in = float(p_vals[0]) if len(p_vals) > 0 else np.nan
     closure_p = selected.get("selected_closure_pressure_mpa")
@@ -1695,8 +1842,19 @@ def _process_stage(
         stable_min_r2=stable_min_r2,
         stable_window_mode=stable_window_mode,
     )
+    physical_pkn["pkn_C_multiplier_to_g_function_efficiency"] = (
+        compute_C_multiplier_to_fluid_efficiency(
+            storage_unit=physical_pkn.get("pkn_shutin_storage_unit_mean_m2"),
+            leakoff_unit=physical_pkn.get("pkn_shutin_preclosure_leakoff_unit_mean_m2"),
+            target_efficiency=g_function_efficiency.get("g_function_closure_efficiency"),
+        )
+    )
     cluster_audit_rows = physical_pkn.pop("pkn_cluster_audit_rows", [])
     row.update(physical_pkn)
+    row.update(reconcile_fluid_efficiencies(
+        row.get("pkn_shutin_fluid_efficiency"),
+        row.get("g_function_closure_efficiency"),
+    ))
     row["_pkn_cluster_audit_rows"] = cluster_audit_rows
 
     return row
@@ -1726,6 +1884,8 @@ def _empty_closure_fields() -> dict[str, Any]:
         "selected_closure_status": "not_computed",
         "closure_is_candidate": True,
         "closure_is_final_interpretation": False,
+        **compute_g_function_closure_efficiency(np.nan),
+        **reconcile_fluid_efficiencies(np.nan, np.nan),
     }
 
 
@@ -1817,6 +1977,7 @@ def _empty_pkn_fields() -> dict[str, Any]:
         "pkn_shutin_preclosure_leakoff_unit_fraction": np.nan,
         "pkn_C_multiplier_to_20pct_shutin_efficiency": np.nan,
         "pkn_C_multiplier_to_10pct_shutin_efficiency": np.nan,
+        "pkn_C_multiplier_to_g_function_efficiency": np.nan,
         "pkn_fluid_efficiency_warning": "",
         "pkn_C_stage_units_assumed": "",
         "pkn_tp_seconds": np.nan,

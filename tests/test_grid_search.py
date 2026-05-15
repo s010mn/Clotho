@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import math
+import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import clotho.grid_search as grid_search_module
 from clotho.grid_search import (
     ALLOWED_COUPLING,
+    ALLOWED_PARALLEL_BACKENDS,
     ALLOWED_PERF_MODES,
     ALLOWED_WINDOW_MODES,
     GridCase,
@@ -21,6 +24,7 @@ from clotho.grid_search import (
     count_grid_cases,
     enumerate_grid_cases,
     evaluate_case_correlations,
+    fluid_efficiency_reconciliation_pass,
     is_positive_candidate,
     is_robust_positive_candidate,
     parse_choice_grid,
@@ -28,6 +32,7 @@ from clotho.grid_search import (
     parse_int_grid,
     perforation_friction_mpa,
     physical_plausibility_pass,
+    run_grid_search,
     split_outputs,
     write_outputs,
 )
@@ -225,6 +230,7 @@ def _baseline_stats(**overrides):
         "n_stages_in_correlation": 28,
         "placeholder_count": 0,
         "median_shutin_fluid_efficiency": 0.20,
+        "finite_shutin_efficiency_count": 28,
         "count_efficiency_below_5pct": 1,
         "pkn_volume_ok_count": 28,
         "median_stable_dP_dG_r2": 0.7,
@@ -265,6 +271,30 @@ def test_physical_plausibility_pass_fails_high_C_multiplier():
     )
     assert ok is False
     assert "C_multiplier_out_of_range" in reasons
+
+
+def test_fluid_efficiency_reconciliation_pass_baseline():
+    ok, reasons = fluid_efficiency_reconciliation_pass(
+        {
+            "median_abs_efficiency_difference": 0.12,
+            "count_efficiency_consistent_within_0p1": 12,
+            "finite_efficiency_reconciliation_count": 28,
+        }
+    )
+    assert ok is True
+    assert reasons == []
+
+
+def test_fluid_efficiency_reconciliation_pass_fails_difference():
+    ok, reasons = fluid_efficiency_reconciliation_pass(
+        {
+            "median_abs_efficiency_difference": 0.20,
+            "count_efficiency_consistent_within_0p1": 12,
+            "finite_efficiency_reconciliation_count": 28,
+        }
+    )
+    assert ok is False
+    assert "median_abs_efficiency_difference_above_max" in reasons
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +393,25 @@ def test_cli_parser_accepts_pkn_Hw_grid():
     assert args.pkn_H_w_grid == "30,35,40,45,50,55,60"
 
 
+def test_cli_parser_accepts_grid_workers():
+    from clotho.cli import build_parser
+
+    args = build_parser().parse_args([
+        "pkn-grid-search",
+        "--stage-params", "/tmp/stage_params.csv",
+        "--well-root", "/tmp/well4",
+        "--manifest", "/tmp/manifest.csv",
+        "--observations", "/tmp/observations.csv",
+        "--output-dir", "/tmp/grid",
+        "--workers", "4",
+        "--parallel-backend", "process",
+    ])
+
+    assert args.workers == 4
+    assert args.parallel_backend == "process"
+    assert "process" in ALLOWED_PARALLEL_BACKENDS
+
+
 def test_count_perf_modes_expand_correctly():
     grid = _trivial_grid(
         perf_friction_mode=["none", "constant", "orifice"],
@@ -388,6 +437,42 @@ def test_enumerate_yields_count_cases():
     assert {c.fleak for c in cases} == {0.5, 1.0}
 
 
+def test_run_grid_search_parallel_preserves_case_order(monkeypatch, tmp_path):
+    pd.DataFrame({"stage": [1], "max_sustained_rate": [20.0]}).to_csv(
+        tmp_path / "manifest.csv", index=False
+    )
+    pd.DataFrame({"stage": [1], "num_clusters": [4]}).to_csv(
+        tmp_path / "stage_params.csv", index=False
+    )
+    pd.DataFrame({"stage": [1], "microseismic_affected_volume": [100.0]}).to_csv(
+        tmp_path / "observations.csv", index=False
+    )
+
+    def fake_run_one_case(case, *_args, **_kwargs):
+        time.sleep(0.01 * (3 - case.case_id))
+        return {"case_id": case.case_id, "physical_plausibility_pass": True}, True
+
+    monkeypatch.setattr(grid_search_module, "_run_one_case", fake_run_one_case)
+
+    result = run_grid_search(
+        config=GridSearchConfig(
+            stage_params_path=tmp_path / "stage_params.csv",
+            well_root=tmp_path,
+            manifest_path=tmp_path / "manifest.csv",
+            observations_path=tmp_path / "observations.csv",
+            output_dir=tmp_path / "grid",
+        ),
+        grid_kwargs=_trivial_grid(C_multiplier=[0.5, 1.0], fleak=[0.5, 1.0]),
+        max_cases=4,
+        workers=4,
+    )
+
+    assert result["cases_run"] == 4
+    assert result["cases_ok"] == 4
+    assert result["cases_failed"] == 0
+    assert result["cases_df"]["case_id"].tolist() == [0, 1, 2, 3]
+
+
 # ---------------------------------------------------------------------------
 # 8. evaluate_case_correlations + write_outputs (smoke on synthetic summary)
 # ---------------------------------------------------------------------------
@@ -402,6 +487,7 @@ def _fake_summary(n_stages: int = 8) -> pd.DataFrame:
     raw_vol = rng.normal(800, 50, n_stages)
     eff_vol = raw_vol * 0.95
     eff = rng.uniform(0.1, 0.4, n_stages)
+    g_eff = np.clip(eff + rng.normal(0, 0.04, n_stages), 0.01, 0.99)
     r2 = rng.uniform(0.6, 0.9, n_stages)
     ms = storage * 1.2 + rng.normal(0, 10, n_stages)
     em = leakoff * 0.8 + rng.normal(0, 30, n_stages)
@@ -413,10 +499,17 @@ def _fake_summary(n_stages: int = 8) -> pd.DataFrame:
         "raw_injected_volume_m3": raw_vol,
         "effective_injected_volume_m3": eff_vol,
         "pkn_shutin_fluid_efficiency": eff,
+        "g_function_closure_efficiency": g_eff,
+        "efficiency_difference_pkn_minus_g_function": eff - g_eff,
+        "efficiency_ratio_pkn_to_g_function": eff / g_eff,
+        "efficiency_reconciliation_warning": [
+            "efficiency_consistent_within_0p1"
+        ] * n_stages,
         "stable_dP_dG_r2": r2,
         "pkn_volume_status": ["ok"] * n_stages,
         "missing_estimate_reason": [""] * n_stages,
         "pkn_C_multiplier_to_20pct_shutin_efficiency": rng.uniform(0.1, 1.0, n_stages),
+        "pkn_C_multiplier_to_g_function_efficiency": rng.uniform(0.1, 1.0, n_stages),
         "microseismic_affected_volume": ms,
         "electromagnetic_affected_area_with_loss": em,
     })
@@ -429,6 +522,11 @@ def test_evaluate_case_correlations_smoke():
     assert eff_stats["pkn_volume_ok_count"] == len(summary)
     assert eff_stats["placeholder_count"] == 0
     assert np.isfinite(eff_stats["median_shutin_fluid_efficiency"])
+    assert np.isfinite(eff_stats["median_g_function_closure_efficiency"])
+    assert np.isfinite(eff_stats["median_efficiency_difference"])
+    assert "median_efficiency_ratio" in eff_stats
+    assert "fluid_efficiency_reconciliation_pass" in eff_stats
+    assert eff_stats["finite_efficiency_reconciliation_count"] == len(summary)
     # corr rows: 6 metric classes × 2 targets = 12 expected (or fewer if some classes missing)
     assert len(corr_rows) > 0
     # Storage should correlate strongly with microseismic in the fixture
@@ -463,6 +561,13 @@ def test_write_outputs_smoke(tmp_path):
             "tp_multiplier": 1.0,
             "n_stages_in_correlation": 28,
             "median_shutin_fluid_efficiency": 0.2,
+            "median_g_function_closure_efficiency": 0.3,
+            "median_efficiency_difference": -0.1,
+            "median_abs_efficiency_difference": 0.1,
+            "median_efficiency_ratio": 2.0 / 3.0,
+            "count_efficiency_consistent_within_0p1": 28,
+            "fluid_efficiency_plausibility_pass": True,
+            "fluid_efficiency_reconciliation_pass": True,
             "physical_plausibility_pass": True,
             "storage_vs_microseismic_pearson": 0.45,
             "storage_vs_microseismic_spearman": 0.30,
@@ -482,6 +587,13 @@ def test_write_outputs_smoke(tmp_path):
     assert not best.empty
     importance = pd.read_csv(paths["grid_parameter_importance"])
     assert "parameter" in importance.columns
+    grid_cases = pd.read_csv(paths["grid_cases"])
+    for col in [
+        "median_g_function_closure_efficiency",
+        "median_efficiency_difference",
+        "fluid_efficiency_reconciliation_pass",
+    ]:
+        assert col in grid_cases.columns
 
 
 def test_write_outputs_builds_Hw_cancellation_audit(tmp_path):
