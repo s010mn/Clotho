@@ -2750,3 +2750,42 @@ Branch: `sprint`
 - 不提交真实数据；
 - 不 push master；
 - sensitivity 输出在 /tmp/gfunction-ref-audit-phase5b/，不提交。
+
+## Phase 5C — G函数闭合候选体积与微地震/广域电磁对照
+
+Branch: `sprint`
+
+新增文件：
+
+- `GROUP_MEETING_GFUNCTION_VOLUME.md`：纠偏后的组会汇报材料
+
+核心修正：
+
+- 主指标改为 pkn_fracture_volume_m3（不是 raw/effective injected volume）；
+- raw/effective injected volume 只作为施工规模控制变量；
+- 明确记录旧半缝长口径的负相关（Pearson -0.36 ~ -0.39 vs 微地震）；
+- 当前 PKN 体积口径为弱正相关（Pearson 0.25 ~ 0.37 vs 微地震，0.31 ~ 0.40 vs 电磁）；
+- 正确表述：方向从负变正，但幅度仍然很弱，不能说已验证反演有效。
+
+敏感性 grid（60 组 + f_eff post-processing）：
+
+- C_wb = {0, 0.1, 0.5, 1.0, 5.0}；
+- perf = {0, 1, 2, 5} MPa；
+- closure_min_elapsed = {15, 30, 60} s；
+- f_eff = {0.25, 0.5, 0.75, 1.0}（post-processing）。
+
+关键发现：
+
+- closure_min_elapsed_seconds 对 pkn volume 相关性影响最大；
+- 井筒存储修正对相关性几乎没有影响（V_storage << V_total）；
+- 射孔摩阻影响 < 0.03 Pearson；
+- effective volume correction 当前只是小扰动。
+
+散点图（6 张）生成在 /tmp/gfunction-ref-audit-phase5c/figures/，不提交。
+
+边界：
+
+- 不新增模型公式；
+- 不提交 PNG / CSV / 真实数据；
+- 不 push master；
+- closure outputs remain candidates, not final interpretation。
