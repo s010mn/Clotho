@@ -204,3 +204,27 @@ pkn_C_multiplier_to_20pct median ~0.28，提示当前 C_stage 大致需要缩小
 - 复核 I_F=0.722464726919 的来源积分 (TODO #19)；
 - 在确认所有 sanity check 后，决定是否需要重新定义 C_stage（如改用 calibrated Carter C 代替 stable slope）；
 - **不通过调 C 强行让 shut-in efficiency 达到 20%**。
+
+## 27. Phase 5F 网格搜索后续
+
+Phase 5F 引入 `clotho pkn-grid-search`，把 closure_min_elapsed / pkn_C_coupling /
+flow_allocation_exponent / stress_shadow_alpha / fleak / C_multiplier /
+effective_volume_factor / wellbore_storage / 射孔摩阻 (4 modes) / 稳定段 R²·点数·选段
+模式 / tp_multiplier 一起作为搜索空间，并在 `physical_plausibility_pass` 子集中
+寻找 `Pearson > 0.3`（robust 再叠加 `Spearman > 0.2`）的 metric × target candidate。
+
+需要做的事：
+
+- 人工在真实 well4 staging 上重跑 `clotho pkn-grid-search` 全 grid 或者一个明确的
+  coarse subgrid（synthetic smoke 不能代表真实数据）；
+- 把得到的 `grid_robust_positive_candidates.csv` 拿到组会上讨论：
+  哪一类 metric（storage / leakoff_proxy / nonstorage / raw_volume / effective_volume）
+  在哪一种参数组合下出现 robust 正相关，又是否落在物理可信子集；
+- 复核 `grid_parameter_importance.csv`：每个参数轴的 mean Pearson 与
+  mean efficiency 的耦合关系，识别真正驱动效率的轴是否就是 `C_multiplier`
+  以及 fleak / wellbore_storage 是否能在不动 C 的前提下把 efficiency 推回
+  合理区间；
+- 在确认 robust candidate 之前，**不**修改 C_stage 或 H_p 等公式默认；
+- 网格搜索 CSV 都放在 `/tmp/gfunction-ref-audit-phase5f/`，不提交；
+- 真正下结论之前，再对 robust candidate 做手工 plot review（G·dP/dG vs G，
+  observation vs metric 散点）以排除单 stage outlier 主导。

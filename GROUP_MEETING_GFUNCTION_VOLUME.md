@@ -367,3 +367,13 @@ Figures generated outside repo:
 
 - Phase 5D.5: `/tmp/gfunction-ref-audit-phase5d5/figures/` (fluid partition scatter plots, stage-constant C baseline);
 - Phase 5D.6: `/tmp/gfunction-ref-audit-phase5d6/` (efficiency audit CSV; no plots—shut-in efficiency is reported as blocker, not as a finalized observation).
+
+## 12. Phase 5F 网格搜索（参见 GROUP_MEETING_GRID_SEARCH.md）
+
+Phase 5F 暴露的所有“当前不可控”参数（C_multiplier / fleak / 稳定段选段 /
+tp_multiplier / 射孔摩阻 / 井筒储集 / 有效液量因子 / flow_allocation /
+stress_shadow_alpha / pkn_C_coupling）统一通过 `clotho pkn-grid-search` 一次性
+铺开。物理可信子集（n ≥ 20, median efficiency ∈ [0.10, 0.40], pkn ok ≥ 25,
+median R² ≥ 0.5, C_multiplier ∈ [0.1, 2.0]）内的正相关候选写到
+`grid_robust_positive_candidates.csv`。**仍然不允许**把网格里 Pearson 最大的 case
+当作最终物理解释；详见 `GROUP_MEETING_GRID_SEARCH.md`。

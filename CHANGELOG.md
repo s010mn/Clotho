@@ -3150,3 +3150,150 @@ shut-in efficiency 计数:
 - shut-in efficiency 偏低作为 blocker 列入 TODO，待人工复核；
 - 不提交 PNG / CSV / 真实数据；
 - 不 push master。
+
+## Phase 5F：physically constrained PKN parameter grid search
+
+目的：
+
+- 不是 p-hacking，不是只挑一个正相关。
+- Phase 5D.6 暴露的核心问题（shut-in fluid efficiency median ≈ 8%）背后真正的嫌疑是
+  `C_stage`、稳定段选段、`H_p / fleak`、`tp` 修正、射孔摩阻、井筒储集，以及全套有效液量口径。
+- 因此在固定 I_F = 0.722464726919、H_w = 50 m 的前提下，引入参数-选点-修正项网格搜索，
+  把这些口径的敏感性一次性写下来。本阶段只产出 audit/sensitivity 表，不写成最终物理解释。
+
+新增模块：
+
+- `src/clotho/grid_search.py`：
+  - `parse_float_grid` / `parse_int_grid` / `parse_choice_grid`；
+  - `perforation_friction_mpa(rate, density, d, N, Cd, flow_fraction)` —— Bernoulli orifice 公式；
+  - `compute_orifice_stage_pressures` —— 利用 manifest `max_sustained_rate` 和 stage_params
+    `num_clusters` 给出每段 ΔP，输出 min/mean/max + per_stage；
+  - `GridCase` dataclass：把每个 case 的参数 frozen；
+  - `enumerate_grid_cases` / `count_grid_cases`：mode-aware 展开（none/constant/orifice/
+    zero-after-shutin 各自只展开自己用到的参数子树）；
+  - `physical_plausibility_pass(stats, criteria)`：根据 median efficiency、n、placeholder
+    数、pkn ok 数、median stable R²、C_multiplier 是否在 [0.1, 2.0] 等多维条件判断；
+  - `is_positive_candidate(pearson_r, n)`：Pearson > 0.3 且 n ≥ 20；
+  - `is_robust_positive_candidate(pearson_r, spearman_r, n, physical_pass)`：再叠加
+    Spearman > 0.2 和物理可信；
+  - `evaluate_case_correlations`：对每个 case 的 summary 输出 efficiency stats 和 metric ×
+    target 的 Pearson/Spearman/n。所考察的 metric class 包含 storage / leakoff_proxy /
+    nonstorage / raw_volume / effective_volume / legacy_mvp；
+  - `split_outputs`：把宽表 `grid_cases` 拆成 positive_candidates、robust_positive、
+    best_by_target；
+  - `compute_parameter_importance`：按每个参数取值做 groupby，给出
+    `mean_*_pearson` / `mean_median_shutin_fluid_efficiency` / `physical_pass_rate`；
+  - `write_outputs`：把所有表写到 `--output-dir`，包含 `grid_cases.csv`,
+    `grid_positive_candidates.csv`, `grid_robust_positive_candidates.csv`,
+    `grid_best_by_target.csv`, `grid_parameter_importance.csv`, `grid_failed_cases.csv`。
+
+closure 暴露：
+
+- `pick_stable_pressure_g_segment` 新增 `window_mode` 选项（默认 `longest` 保留旧行为）；
+  支持 `best-r2`（在所有满足 R² ≥ min 的候选窗口里选 R² 最高）和 `early-best`
+  （在 valid_idx 前半段优先；若无满足者退回全局 best-R²）。
+- `physical_pkn_volume_balance` 新增 `stable_window_mode`、`C_multiplier` 参数；
+  默认 1.0 保留旧行为；输出新增 `pkn_C_stage_raw` 和 `pkn_C_multiplier_applied`。
+- `_process_stage` / `run_closure_batch` 新增 keyword args：
+  `tp_multiplier`（应用到 tp_for_g）、`effective_volume_factor`（应用到
+  `effective_injected_volume_m3` 后再传 PKN）、`fleak_override`、`C_multiplier`、
+  `stable_min_elapsed_seconds` / `stable_min_points` / `stable_min_r2` /
+  `stable_window_mode`；全部有 legacy-preserving 默认；
+- summary 中新增列：`tp_multiplier_applied`, `tp_for_g_seconds`,
+  `effective_volume_factor_applied`, `pkn_fleak_override_applied`,
+  `pkn_effective_injected_volume_m3`, `pkn_C_stage_raw`,
+  `pkn_C_multiplier_applied`；placeholder 行也包含这些列以保证 schema 一致。
+
+新增 CLI：
+
+- `clotho pkn-grid-search`：
+  - 必填 `--stage-params --well-root --manifest --observations --output-dir`；
+  - 网格 flags 使用逗号分隔字符串：`--closure-min-elapsed-grid`,
+    `--pkn-C-coupling-grid`, `--flow-allocation-grid`,
+    `--flow-allocation-exponent-grid`, `--stress-shadow-alpha-grid`,
+    `--fleak-grid`, `--C-multiplier-grid`, `--effective-volume-factor-grid`,
+    `--wellbore-storage-coeff-grid`, `--perforation-friction-mode-grid`,
+    `--perforation-friction-mpa-grid`, `--perforation-diameter-mm-grid`,
+    `--perforations-per-cluster-grid`, `--perforation-Cd-grid`,
+    `--fluid-density-kg-m3-grid`, `--stable-min-r2-grid`,
+    `--stable-min-points-grid`, `--stable-window-mode-grid`, `--tp-multiplier-grid`；
+  - `--max-cases`：硬上限。超过则报错 `grid case count N exceeds --max-cases M`，
+    不做 silent random sampling；
+  - plausibility 阈值有 CLI 重写口（`--plausibility-min-eff` 等），默认与
+    `PhysicalPlausibilityCriteria` 一致。
+
+射孔摩阻策略：
+
+- `none`：ΔP_perf = 0，不做任何压力修正；
+- `constant`：ΔP_perf = `--perforation-friction-mpa-grid` 中的常数（旧 sensitivity）；
+- `orifice`：泵注期 ΔP_perf = 0.5 ρ (q_i / (Cd · A_total))²，flow_fraction = 1/num_clusters；
+  用 stage 间均值作为 scalar 传入 closure-batch，min/mean/max 保留为 audit 字段；
+- `zero-after-shutin`：post-shut-in net pressure correction = 0（因为停泵后 rate = 0
+  且 ΔP_perf ∝ Q²）；同时计算泵注期 orifice 估计作为 audit 字段。该模式是物理推荐
+  默认；orifice 模式只是 pumping-period sensitivity。
+
+井筒储集策略：
+
+- 仍使用现有 V_wb = C_wb · max(P_shutin − P_closure, 0)；
+- 不伪造井筒体积 × 总压缩系数；
+- 仅把 C_wb 作为搜索轴，记录到 `wellbore_storage_coeff_m3_per_mpa`。
+
+物理可信度判据（baseline，可通过 CLI 调整）：
+
+- n_stages ≥ 20；
+- placeholder ≤ 2；
+- median shut-in efficiency ∈ [0.10, 0.40]；
+- count efficiency < 5% 不超过 5；
+- pkn_volume_status=ok 计数 ≥ 25；
+- median stable R² ≥ 0.5；
+- C_multiplier ∈ [0.1, 2.0]。
+
+正相关候选判据：
+
+- `positive_candidate` = Pearson > 0.3 且 n ≥ 20；
+- `robust_positive_candidate` = positive 且 Spearman > 0.2 且
+  physical_plausibility_pass=True。
+
+输出文件（写到 `--output-dir`）：
+
+- `grid_cases.csv`：每个 case 一行，包含所有参数、efficiency stats、metric × target
+  pearson/spearman/n、physical_plausibility_pass 标志和原因；
+- `grid_positive_candidates.csv`：按 (case_id, metric_vs_target) 展开后只保留 Pearson > 0.3、n ≥ 20 的行；
+- `grid_robust_positive_candidates.csv`：在 positive 基础上 Spearman > 0.2 且物理可信；
+- `grid_best_by_target.csv`：按 (metric_vs_target, physical_pass) 选 Pearson 最大的 case；
+  既包含物理可信 best 也包含 unconstrained best；
+- `grid_parameter_importance.csv`：按每个参数取值统计 case_count, mean_*_pearson,
+  mean_median_shutin_fluid_efficiency, physical_pass_rate；
+- `grid_failed_cases.csv`：捕获 case 内异常（保留 case 参数和异常类型，避免静默丢失）。
+
+测试：
+
+- 新增 `tests/test_grid_search.py`，35 个测试，全部 synthetic：
+  - parse_float_grid / parse_int_grid / parse_choice_grid 包括去重、非有限值拒收；
+  - 手算 ΔP_perf 参考解：rate=1, ρ=1000, d=0.01, N=10, Cd=1 ⇒ 约 810.57 MPa；
+  - q=0 / flow_fraction=0 ⇒ ΔP_perf = 0；
+  - 各种非法输入（密度、直径、孔数、Cd）抛 ValueError；
+  - mini synthetic manifest 走 `compute_orifice_stage_pressures` smoke；
+  - physical_plausibility_pass 在 baseline / 低 efficiency / 低 n / 高 C_multiplier 下的行为；
+  - is_positive / is_robust 标志在各种阈值边界下的行为；
+  - count_grid_cases 与 enumerate_grid_cases 对齐；
+  - `write_outputs` smoke：所有 CSV 都能写出并能被 pandas 读回。
+
+reference smoke：
+
+- 由于 `/tmp` 的 well4 staging 在 session 间被清理，本阶段 reference smoke 使用
+  `/tmp/gfunction-ref-audit-phase5f-synthetic/`（28 段 synthetic 数据）跑通端到端，
+  并演示 `--max-cases` 上限的硬报错路径。Synthetic 数据不提交，仅用于
+  pipeline 验证。真实 well4 grid search 需在该 staging 重建后由人工再次执行。
+
+边界（5F）：
+
+- I_F 不变（仍为 0.722464726919）；
+- H_w 不变（50 m fixed）；
+- 网格搜索结果不写成最终物理解释；
+- 不修改 `closure-batch` 已有默认；
+- 不 push master；
+- 不提交真实数据 / PNG / CSV / 网格输出；
+- 不删除负相关结果；
+- 不只报告最好看的正相关；
+- 不做 silent random sampling，超 `--max-cases` 直接报错。

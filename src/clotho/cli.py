@@ -10,6 +10,18 @@ import pandas as pd
 from clotho import __version__
 from clotho.batch import run_derivative_batch
 from clotho.closure import run_closure_batch, write_closure_batch_outputs
+from clotho.grid_search import (
+    ALLOWED_COUPLING,
+    ALLOWED_FLOW_ALLOCATION,
+    ALLOWED_PERF_MODES,
+    ALLOWED_WINDOW_MODES,
+    GridSearchConfig,
+    PhysicalPlausibilityCriteria,
+    parse_choice_grid,
+    parse_float_grid,
+    parse_int_grid,
+    run_grid_search,
+)
 from clotho.g_function import nolte_g_time
 from clotho.pressure_derivative import derivative_value_summary, pressure_derivative_against_g_time
 from clotho.review import (
@@ -256,6 +268,53 @@ def build_parser() -> argparse.ArgumentParser:
     closure_batch.add_argument("--flow-allocation", choices=["stress-shadow", "uniform"], default="stress-shadow", help="Flow allocation method.")
     closure_batch.add_argument("--flow-allocation-exponent", default=1.0, type=float, help="Flow allocation exponent gamma (eta_i = xi_i^gamma / sum).")
     closure_batch.add_argument("--pkn-C-coupling", choices=["stage-constant", "shadow-scaled"], default="stage-constant", help="Per-cluster leakoff coupling. stage-constant: C_L_i = C_stage; shadow-scaled: C_L_i = xi_i * C_stage (legacy Phase 5D.4 coupling).")
+
+    grid = subparsers.add_parser(
+        "pkn-grid-search",
+        help="Phase 5F physically constrained PKN parameter grid search. Sensitivity/audit tool, not an inversion. Outputs go to /tmp; do not commit.",
+    )
+    grid.add_argument("--stage-params", required=True, type=Path)
+    grid.add_argument("--well-root", required=True, type=Path)
+    grid.add_argument("--manifest", required=True, type=Path)
+    grid.add_argument("--observations", required=True, type=Path)
+    grid.add_argument("--output-dir", required=True, type=Path)
+    grid.add_argument("--volume-column", default="total_volume")
+    grid.add_argument("--rate-time-unit", choices=["second", "minute"], default="minute")
+    grid.add_argument("--min-rate", default=10.0, type=float)
+    grid.add_argument("--g-time-m", default=0.8, type=float)
+    grid.add_argument("--pressure-source", choices=["estimated-bottomhole", "wellhead"], default="estimated-bottomhole")
+    grid.add_argument("--method-preference", choices=["barree", "mcclure", "barree-then-mcclure", "mcclure-then-barree"], default="barree-then-mcclure")
+    grid.add_argument("--elapsed-duplicate-policy", choices=["none", "keep-first", "keep-last", "mean"], default="keep-last")
+    grid.add_argument("--well", default=None)
+    grid.add_argument("--max-cases", type=int, default=200000, help="Cap on total grid size; refuse to run if exceeded (no silent sampling).")
+    grid.add_argument("--closure-min-elapsed-grid", default="15,30,60")
+    grid.add_argument("--pkn-C-coupling-grid", default="stage-constant,shadow-scaled")
+    grid.add_argument("--flow-allocation-grid", default="stress-shadow,uniform")
+    grid.add_argument("--flow-allocation-exponent-grid", default="0,1,2")
+    grid.add_argument("--stress-shadow-alpha-grid", default="0,0.5,1,2")
+    grid.add_argument("--fleak-grid", default="0.25,0.5,0.75,1.0")
+    grid.add_argument("--C-multiplier-grid", default="0.1,0.2,0.282,0.5,0.75,1.0,1.5,2.0")
+    grid.add_argument("--effective-volume-factor-grid", default="0.25,0.5,0.75,1.0")
+    grid.add_argument("--wellbore-storage-coeff-grid", default="0,0.1,0.5,1,2,5")
+    grid.add_argument("--perforation-friction-mode-grid", default="none,constant,orifice,zero-after-shutin")
+    grid.add_argument("--perforation-friction-mpa-grid", default="0,1,2,5")
+    grid.add_argument("--perforation-diameter-mm-grid", default="8,10,12,14")
+    grid.add_argument("--perforations-per-cluster-grid", default="4,6,8,10,12")
+    grid.add_argument("--perforation-Cd-grid", default="0.55,0.7,0.85,0.95")
+    grid.add_argument("--fluid-density-kg-m3-grid", default="1000,1050,1100")
+    grid.add_argument("--stable-min-r2-grid", default="0.5,0.7,0.85")
+    grid.add_argument("--stable-min-points-grid", default="6,8,12")
+    grid.add_argument("--stable-window-mode-grid", default="best-r2,longest,early-best")
+    grid.add_argument("--tp-multiplier-grid", default="0.7,0.85,1.0,1.15,1.3")
+    grid.add_argument("--plausibility-min-n", type=int, default=20)
+    grid.add_argument("--plausibility-max-placeholder", type=int, default=2)
+    grid.add_argument("--plausibility-min-eff", type=float, default=0.10)
+    grid.add_argument("--plausibility-max-eff", type=float, default=0.40)
+    grid.add_argument("--plausibility-max-below-5pct", type=int, default=5)
+    grid.add_argument("--plausibility-min-pkn-ok", type=int, default=25)
+    grid.add_argument("--plausibility-min-r2", type=float, default=0.5)
+    grid.add_argument("--plausibility-min-C-mult", type=float, default=0.1)
+    grid.add_argument("--plausibility-max-C-mult", type=float, default=2.0)
 
     return parser
 
@@ -901,6 +960,80 @@ def _run_closure_batch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_pkn_grid_search(args: argparse.Namespace) -> int:
+    grid_kwargs = {
+        "closure_min_elapsed_seconds": parse_float_grid(args.closure_min_elapsed_grid),
+        "pkn_C_coupling": parse_choice_grid(args.pkn_C_coupling_grid, ALLOWED_COUPLING),
+        "flow_allocation": parse_choice_grid(args.flow_allocation_grid, ALLOWED_FLOW_ALLOCATION),
+        "flow_allocation_exponent": parse_float_grid(args.flow_allocation_exponent_grid),
+        "stress_shadow_alpha": parse_float_grid(args.stress_shadow_alpha_grid),
+        "fleak": parse_float_grid(args.fleak_grid),
+        "C_multiplier": parse_float_grid(args.C_multiplier_grid),
+        "effective_volume_factor": parse_float_grid(args.effective_volume_factor_grid),
+        "wellbore_storage_coeff_m3_per_mpa": parse_float_grid(args.wellbore_storage_coeff_grid),
+        "perf_friction_mode": parse_choice_grid(args.perforation_friction_mode_grid, ALLOWED_PERF_MODES),
+        "perf_friction_constant_mpa": parse_float_grid(args.perforation_friction_mpa_grid),
+        "perforation_diameter_mm": parse_float_grid(args.perforation_diameter_mm_grid),
+        "perforations_per_cluster": parse_int_grid(args.perforations_per_cluster_grid),
+        "perforation_Cd": parse_float_grid(args.perforation_Cd_grid),
+        "fluid_density_kg_m3": parse_float_grid(args.fluid_density_kg_m3_grid),
+        "stable_min_r2": parse_float_grid(args.stable_min_r2_grid),
+        "stable_min_points": parse_int_grid(args.stable_min_points_grid),
+        "stable_window_mode": parse_choice_grid(args.stable_window_mode_grid, ALLOWED_WINDOW_MODES),
+        "tp_multiplier": parse_float_grid(args.tp_multiplier_grid),
+    }
+    criteria = PhysicalPlausibilityCriteria(
+        min_n=args.plausibility_min_n,
+        max_placeholder_count=args.plausibility_max_placeholder,
+        min_median_efficiency=args.plausibility_min_eff,
+        max_median_efficiency=args.plausibility_max_eff,
+        max_efficiency_below_5pct_count=args.plausibility_max_below_5pct,
+        min_pkn_ok_count=args.plausibility_min_pkn_ok,
+        min_median_stable_r2=args.plausibility_min_r2,
+        min_C_multiplier=args.plausibility_min_C_mult,
+        max_C_multiplier=args.plausibility_max_C_mult,
+    )
+    config = GridSearchConfig(
+        stage_params_path=args.stage_params,
+        well_root=args.well_root,
+        manifest_path=args.manifest,
+        observations_path=args.observations,
+        output_dir=args.output_dir,
+        volume_column=args.volume_column,
+        rate_time_unit=args.rate_time_unit,
+        min_rate=args.min_rate,
+        g_time_m=args.g_time_m,
+        pressure_source=args.pressure_source,
+        method_preference=args.method_preference,
+        elapsed_duplicate_policy=args.elapsed_duplicate_policy,
+        well=args.well,
+    )
+
+    def _progress(i: int, total: int, _row: dict) -> None:
+        if i == 1 or i % 50 == 0 or i == total:
+            print(f"pkn_grid_search_progress={i}/{total}")
+
+    result = run_grid_search(
+        config=config,
+        grid_kwargs=grid_kwargs,
+        max_cases=args.max_cases,
+        criteria=criteria,
+        progress_callback=_progress,
+    )
+    paths = result["output_paths"]
+    print(f"pkn_grid_search_total_cases={result['total_cases']}")
+    print(f"pkn_grid_search_cases_run={result['cases_run']}")
+    print(f"pkn_grid_search_cases_ok={result['cases_ok']}")
+    print(f"pkn_grid_search_cases_failed={result['cases_failed']}")
+    for key, path in paths.items():
+        print(f"pkn_grid_search_{key}_path={path}")
+    print("pkn_grid_search_is_candidate=True")
+    print("pkn_grid_search_is_final_interpretation=False")
+    print("pkn_grid_search_I_F_changed=False")
+    print("pkn_grid_search_H_w_changed=False")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -931,6 +1064,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "closure-batch":
         try:
             return _run_closure_batch(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "pkn-grid-search":
+        try:
+            return _run_pkn_grid_search(args)
         except ValueError as exc:
             parser.error(str(exc))
 

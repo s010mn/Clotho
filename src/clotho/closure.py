@@ -595,8 +595,18 @@ def pick_stable_pressure_g_segment(
     min_elapsed_seconds: float = 15.0,
     min_points: int = 8,
     min_r2: float = 0.8,
+    window_mode: str = "longest",
 ) -> dict[str, Any]:
-    """Find longest linear P-vs-G segment before closure."""
+    """Find a linear P-vs-G segment before closure.
+
+    window_mode controls how the segment is chosen among candidate windows that
+    satisfy slope<0 and R^2>=min_r2:
+      - "longest" (default, legacy): pick the longest qualifying window.
+      - "best-r2": pick the window with the highest R^2 regardless of length.
+      - "early-best": prefer windows starting in the earlier half of valid_idx;
+        among those pick the highest R^2. Falls back to the overall best-R^2
+        candidate if no early window qualifies.
+    """
     failed: dict[str, Any] = {
         "stable_segment_status": "not_found",
         "stable_dP_dG_slope_mpa": np.nan,
@@ -609,6 +619,9 @@ def pick_stable_pressure_g_segment(
         "stable_segment_point_count": 0,
     }
 
+    if window_mode not in ("longest", "best-r2", "early-best"):
+        raise ValueError(f"unknown window_mode: {window_mode}")
+
     mask = elapsed_seconds >= min_elapsed_seconds
     if closure_index is not None:
         idx_mask = np.arange(len(elapsed_seconds)) <= closure_index
@@ -618,53 +631,101 @@ def pick_stable_pressure_g_segment(
     if len(valid_idx) < min_points:
         return failed
 
-    best_start = -1
-    best_end = -1
-    best_n = 0
-    best_r2 = -1.0
-    best_slope = np.nan
-    best_intercept = np.nan
+    if window_mode == "longest":
+        best_start = -1
+        best_end = -1
+        best_n = 0
+        best_r2 = -1.0
+        best_slope = np.nan
+        best_intercept = np.nan
 
-    for window_len in range(len(valid_idx), min_points - 1, -1):
+        for window_len in range(len(valid_idx), min_points - 1, -1):
+            for start_pos in range(len(valid_idx) - window_len + 1):
+                seg = valid_idx[start_pos: start_pos + window_len]
+                g_seg = g_time[seg]
+                p_seg = pressure_mpa[seg]
+
+                if len(np.unique(g_seg)) < 2:
+                    continue
+
+                coeffs = np.polyfit(g_seg, p_seg, 1)
+                slope, intercept = float(coeffs[0]), float(coeffs[1])
+                p_pred = slope * g_seg + intercept
+                ss_res = float(np.sum((p_seg - p_pred) ** 2))
+                ss_tot = float(np.sum((p_seg - np.mean(p_seg)) ** 2))
+                r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+                if r2 >= min_r2 and window_len > best_n:
+                    best_start = int(seg[0])
+                    best_end = int(seg[-1])
+                    best_n = window_len
+                    best_r2 = r2
+                    best_slope = slope
+                    best_intercept = intercept
+                    break
+            if best_n >= window_len:
+                break
+
+        if best_n < min_points or best_slope >= 0:
+            return failed
+
+        return {
+            "stable_segment_status": "ok",
+            "stable_dP_dG_slope_mpa": best_slope,
+            "stable_dP_dG_intercept_mpa": best_intercept,
+            "stable_dP_dG_r2": best_r2,
+            "stable_segment_start_index": best_start,
+            "stable_segment_end_index": best_end,
+            "stable_segment_start_elapsed_seconds": float(elapsed_seconds[best_start]),
+            "stable_segment_end_elapsed_seconds": float(elapsed_seconds[best_end]),
+            "stable_segment_point_count": best_n,
+        }
+
+    # best-r2 / early-best: enumerate all qualifying windows then choose
+    candidates: list[tuple[int, int, int, float, float, float]] = []
+    for window_len in range(min_points, len(valid_idx) + 1):
         for start_pos in range(len(valid_idx) - window_len + 1):
             seg = valid_idx[start_pos: start_pos + window_len]
             g_seg = g_time[seg]
             p_seg = pressure_mpa[seg]
-
             if len(np.unique(g_seg)) < 2:
                 continue
-
             coeffs = np.polyfit(g_seg, p_seg, 1)
             slope, intercept = float(coeffs[0]), float(coeffs[1])
+            if slope >= 0:
+                continue
             p_pred = slope * g_seg + intercept
             ss_res = float(np.sum((p_seg - p_pred) ** 2))
             ss_tot = float(np.sum((p_seg - np.mean(p_seg)) ** 2))
             r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+            if r2 < min_r2:
+                continue
+            candidates.append((int(seg[0]), int(seg[-1]), window_len, r2, slope, intercept))
 
-            if r2 >= min_r2 and window_len > best_n:
-                best_start = int(seg[0])
-                best_end = int(seg[-1])
-                best_n = window_len
-                best_r2 = r2
-                best_slope = slope
-                best_intercept = intercept
-                break
-        if best_n >= window_len:
-            break
-
-    if best_n < min_points or best_slope >= 0:
+    if not candidates:
         return failed
 
+    if window_mode == "best-r2":
+        best = max(candidates, key=lambda c: c[3])
+    else:  # early-best
+        early_cutoff = int(valid_idx[len(valid_idx) // 2])
+        early = [c for c in candidates if c[0] <= early_cutoff]
+        if early:
+            best = max(early, key=lambda c: c[3])
+        else:
+            best = max(candidates, key=lambda c: c[3])
+
+    best_start, best_end, best_n, best_r2, best_slope, best_intercept = best
     return {
         "stable_segment_status": "ok",
-        "stable_dP_dG_slope_mpa": best_slope,
-        "stable_dP_dG_intercept_mpa": best_intercept,
-        "stable_dP_dG_r2": best_r2,
-        "stable_segment_start_index": best_start,
-        "stable_segment_end_index": best_end,
+        "stable_dP_dG_slope_mpa": float(best_slope),
+        "stable_dP_dG_intercept_mpa": float(best_intercept),
+        "stable_dP_dG_r2": float(best_r2),
+        "stable_segment_start_index": int(best_start),
+        "stable_segment_end_index": int(best_end),
         "stable_segment_start_elapsed_seconds": float(elapsed_seconds[best_start]),
         "stable_segment_end_elapsed_seconds": float(elapsed_seconds[best_end]),
-        "stable_segment_point_count": best_n,
+        "stable_segment_point_count": int(best_n),
     }
 
 
@@ -729,9 +790,11 @@ def physical_pkn_volume_balance(
     stable_min_elapsed_seconds: float = 15.0,
     stable_min_points: int = 8,
     stable_min_r2: float = 0.8,
+    stable_window_mode: str = "longest",
     flow_allocation: str = "stress-shadow",
     flow_allocation_exponent: float = 1.0,
     C_coupling: str = "stage-constant",
+    C_multiplier: float = 1.0,
 ) -> dict[str, Any]:
     """Physical PKN storage volume balance with stress shadow and stable-segment C.
 
@@ -739,6 +802,15 @@ def physical_pkn_volume_balance(
     to per-cluster C_L_i:
       - "stage-constant" (default): C_L_i = C_stage for all i.
       - "shadow-scaled":  C_L_i = xi_i * C_stage (legacy Phase 5D.4 coupling).
+
+    stable_window_mode is forwarded to pick_stable_pressure_g_segment. The default
+    "longest" preserves legacy behaviour; "best-r2" / "early-best" are for
+    grid-search sensitivity, not production interpretation.
+
+    C_multiplier is a Phase 5F sensitivity knob: C_stage is computed from the
+    stable-segment slope, then multiplied by C_multiplier before any per-cluster
+    coupling. The default 1.0 preserves legacy behaviour. The raw value and the
+    applied multiplier are recorded in the output for audit.
     """
 
     base: dict[str, Any] = {
@@ -775,6 +847,8 @@ def physical_pkn_volume_balance(
             "pkn_C_status": "failed",
             "pkn_C_coupling_method": C_coupling,
             "pkn_C_stage": np.nan,
+            "pkn_C_stage_raw": np.nan,
+            "pkn_C_multiplier_applied": float(C_multiplier),
             "pkn_C_min": np.nan,
             "pkn_C_max": np.nan,
             "pkn_C_mean": np.nan,
@@ -863,6 +937,7 @@ def physical_pkn_volume_balance(
         min_elapsed_seconds=stable_min_elapsed_seconds,
         min_points=stable_min_points,
         min_r2=stable_min_r2,
+        window_mode=stable_window_mode,
     )
     if seg["stable_segment_status"] != "ok":
         out = _fail("no_stable_pressure_g_segment")
@@ -877,7 +952,14 @@ def physical_pkn_volume_balance(
     slope = seg["stable_dP_dG_slope_mpa"]
     # C_stage: stage-level leakoff coefficient computed from stable dP/dG with xi=1.
     # Phase 5D.5 lets C_L_i either equal C_stage (stage-constant) or scale by xi (shadow-scaled).
-    C_stage = compute_physical_leakoff_C(slope, H_w_m, E_prime_mpa, H_p_m, tp_seconds, 1.0, I_F=I_F)
+    # Phase 5F adds a multiplier knob for grid-search sensitivity; the raw value is preserved.
+    C_stage_raw = compute_physical_leakoff_C(slope, H_w_m, E_prime_mpa, H_p_m, tp_seconds, 1.0, I_F=I_F)
+    if not np.isfinite(C_multiplier) or C_multiplier <= 0:
+        out = _fail(f"invalid_C_multiplier:{C_multiplier}")
+        out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
+        out.update(seg)
+        return out
+    C_stage = C_stage_raw * float(C_multiplier)
     if not np.isfinite(C_stage) or C_stage < 0:
         out = _fail("invalid_C_from_stable_dP_dG")
         out.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
@@ -1011,6 +1093,8 @@ def physical_pkn_volume_balance(
         out["pkn_C_status"] = "ok"
         out["pkn_C_coupling_method"] = C_coupling
         out["pkn_C_stage"] = float(C_stage)
+        out["pkn_C_stage_raw"] = float(C_stage_raw)
+        out["pkn_C_multiplier_applied"] = float(C_multiplier)
         out["pkn_C_min"] = float(np.min(C_arr))
         out["pkn_C_max"] = float(np.max(C_arr))
         out["pkn_C_mean"] = float(np.mean(C_arr))
@@ -1158,6 +1242,8 @@ def physical_pkn_volume_balance(
         "pkn_C_status": "ok",
         "pkn_C_coupling_method": C_coupling,
         "pkn_C_stage": float(C_stage),
+        "pkn_C_stage_raw": float(C_stage_raw),
+        "pkn_C_multiplier_applied": float(C_multiplier),
         "pkn_C_stage_units_assumed": "m_per_sqrt_second",
         "pkn_C_min": float(np.min(C_arr)),
         "pkn_C_max": float(np.max(C_arr)),
@@ -1377,9 +1463,25 @@ def _process_stage(
     flow_allocation: str = "stress-shadow",
     flow_allocation_exponent: float = 1.0,
     pkn_C_coupling: str = "stage-constant",
+    tp_multiplier: float = 1.0,
+    effective_volume_factor: float = 1.0,
+    fleak_override: float | None = None,
+    C_multiplier: float = 1.0,
+    stable_min_elapsed_seconds: float = 15.0,
+    stable_min_points: int = 8,
+    stable_min_r2: float = 0.8,
+    stable_window_mode: str = "longest",
 ) -> dict[str, Any]:
     """处理单个 stage 的闭合候选分析。"""
     row: dict[str, Any] = {"stage": stage_info.stage}
+    # Phase 5F audit fields (must appear in every return path for schema consistency)
+    row["tp_multiplier_applied"] = float(tp_multiplier)
+    row["effective_volume_factor_applied"] = float(effective_volume_factor)
+    row["pkn_fleak_override_applied"] = (
+        float(fleak_override) if fleak_override is not None else np.nan
+    )
+    row["pkn_effective_injected_volume_m3"] = np.nan
+    row["tp_for_g_seconds"] = np.nan
 
     curve_file = well_root / stage_info.data_file
     curve = read_stage_curve(curve_file)
@@ -1412,8 +1514,12 @@ def _process_stage(
 
     init_ok = initiation["fracture_initiation_status"] == "ok"
     tp_corrected = initiation["tp_corrected_seconds"] if init_ok else tp_legacy
-    tp_for_g = tp_corrected if init_ok and np.isfinite(tp_corrected) and tp_corrected > 0 else tp_legacy
+    tp_base = tp_corrected if init_ok and np.isfinite(tp_corrected) and tp_corrected > 0 else tp_legacy
+    if not np.isfinite(tp_multiplier) or tp_multiplier <= 0:
+        raise ValueError(f"tp_multiplier must be finite and > 0, got {tp_multiplier}")
+    tp_for_g = tp_base * float(tp_multiplier)
     row["tp_correction_ratio"] = float(tp_corrected / tp_legacy) if tp_legacy > 0 else np.nan
+    row["tp_for_g_seconds"] = float(tp_for_g) if np.isfinite(tp_for_g) else np.nan
 
     init_idx = int(initiation["fracture_initiation_index"]) if init_ok else None
     raw_vol = _compute_raw_injected_volume(curve, init_idx, shut_in_index, volume_column)
@@ -1538,11 +1644,17 @@ def _process_stage(
         stage_info.cluster_spacing_m if stage_info.cluster_spacing_m is not None else 10.0
     )
 
+    if not np.isfinite(effective_volume_factor) or effective_volume_factor <= 0:
+        raise ValueError(f"effective_volume_factor must be finite and > 0, got {effective_volume_factor}")
+    pkn_effective_volume = vol_result["effective_injected_volume_m3"] * float(effective_volume_factor)
+    row["pkn_effective_injected_volume_m3"] = float(pkn_effective_volume)
+    fleak_for_pkn = fleak_override if fleak_override is not None else stage_info.fleak
+
     physical_pkn = physical_pkn_volume_balance(
         n_clusters=n_cl,
         cluster_spacings_m=spacings,
         H_w_m=PHYSICAL_PKN_HW_M,
-        fleak=stage_info.fleak,
+        fleak=fleak_for_pkn,
         E_prime_mpa=E_prime,
         closure_pressure_mpa=closure_p_val,
         minimum_stress_prior_mpa=stage_info.minimum_stress_prior_mpa,
@@ -1553,11 +1665,16 @@ def _process_stage(
         closure_index=closure_idx_for_seg,
         tp_seconds=tp_for_g,
         g_function_m=stage_info.g_function_m if stage_info.g_function_m is not None else g_time_m,
-        effective_injected_volume_m3=vol_result["effective_injected_volume_m3"],
+        effective_injected_volume_m3=pkn_effective_volume,
         alpha=stress_shadow_alpha,
         flow_allocation=flow_allocation,
         flow_allocation_exponent=flow_allocation_exponent,
         C_coupling=pkn_C_coupling,
+        C_multiplier=C_multiplier,
+        stable_min_elapsed_seconds=stable_min_elapsed_seconds,
+        stable_min_points=stable_min_points,
+        stable_min_r2=stable_min_r2,
+        stable_window_mode=stable_window_mode,
     )
     cluster_audit_rows = physical_pkn.pop("pkn_cluster_audit_rows", [])
     row.update(physical_pkn)
@@ -1623,6 +1740,8 @@ def _empty_pkn_fields() -> dict[str, Any]:
         "pkn_C_status": "not_computed",
         "pkn_C_coupling_method": "",
         "pkn_C_stage": np.nan,
+        "pkn_C_stage_raw": np.nan,
+        "pkn_C_multiplier_applied": np.nan,
         "pkn_C_min": np.nan,
         "pkn_C_max": np.nan,
         "pkn_C_mean": np.nan,
@@ -1709,6 +1828,14 @@ def run_closure_batch(
     flow_allocation: str = "stress-shadow",
     flow_allocation_exponent: float = 1.0,
     pkn_C_coupling: str = "stage-constant",
+    tp_multiplier: float = 1.0,
+    effective_volume_factor: float = 1.0,
+    fleak_override: float | None = None,
+    C_multiplier: float = 1.0,
+    stable_min_elapsed_seconds: float = 15.0,
+    stable_min_points: int = 8,
+    stable_min_r2: float = 0.8,
+    stable_window_mode: str = "longest",
     well: str | None = None,
 ) -> dict[str, Any]:
     """运行 closure-batch 批量闭合候选分析。
@@ -1758,6 +1885,14 @@ def run_closure_batch(
             flow_allocation=flow_allocation,
             flow_allocation_exponent=flow_allocation_exponent,
             pkn_C_coupling=pkn_C_coupling,
+            tp_multiplier=tp_multiplier,
+            effective_volume_factor=effective_volume_factor,
+            fleak_override=fleak_override,
+            C_multiplier=C_multiplier,
+            stable_min_elapsed_seconds=stable_min_elapsed_seconds,
+            stable_min_points=stable_min_points,
+            stable_min_r2=stable_min_r2,
+            stable_window_mode=stable_window_mode,
         )
 
         stage_cluster_rows = result.pop("_pkn_cluster_audit_rows", [])
@@ -1792,6 +1927,11 @@ def run_closure_batch(
                 "tp_corrected_seconds": np.nan,
                 "tp_legacy_volume_over_rate_seconds": np.nan,
                 "tp_correction_ratio": np.nan,
+                "tp_multiplier_applied": float(tp_multiplier),
+                "tp_for_g_seconds": np.nan,
+                "effective_volume_factor_applied": float(effective_volume_factor),
+                "pkn_fleak_override_applied": float(fleak_override) if fleak_override is not None else np.nan,
+                "pkn_effective_injected_volume_m3": np.nan,
                 "closure_was_computed": False,
                 "early_transient_risk": False,
             }

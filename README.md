@@ -50,6 +50,22 @@ stage 参数表
   - legacy MVP PKN 结果保留为 `legacy_mvp_pkn_*` 字段；
   - 观测相关性对照（微地震/电磁，含 storage/leakoff/nonstorage proxies）；
   - 所有结果标记 `closure_is_candidate=True, closure_is_final_interpretation=False`。
+- 物理约束 PKN 参数网格搜索（Phase 5F, `pkn-grid-search`）：
+  - 网格轴覆盖 closure_min_elapsed / pkn_C_coupling / flow_allocation /
+    flow_allocation_exponent / stress_shadow_alpha / fleak / C_multiplier /
+    effective_volume_factor / wellbore_storage_coeff / 射孔摩阻模式（none /
+    constant / orifice / zero-after-shutin）/ 射孔几何 / 稳定段 R²·点数·选段模式 /
+    tp_multiplier；
+  - 射孔摩阻采用 Bernoulli orifice 公式 `ΔP = 0.5ρ(q_i/(C_d·A_total))²`；
+  - 物理可信度判据：n、placeholder、median efficiency 区间、count<5%、pkn ok
+    数、median stable R²、C_multiplier 范围；
+  - 正相关候选：Pearson > 0.3（且 n ≥ 20）；robust 再叠加 Spearman > 0.2 + 物理可信；
+  - 输出 `grid_cases.csv` / `grid_positive_candidates.csv` /
+    `grid_robust_positive_candidates.csv` / `grid_best_by_target.csv` /
+    `grid_parameter_importance.csv` / `grid_failed_cases.csv`；
+  - `--max-cases` 硬上限：超过则报错（不做 silent random sampling）；
+  - I_F = 0.722464726919、H_w = 50 m 不进入搜索空间；
+  - 结果是 sensitivity audit，不是最终物理解释。
 
 ## 当前不做
 
