@@ -888,9 +888,45 @@ def run_closure_batch(
                     if col != "stage":
                         result[col] = np.nan
 
+        result["missing_estimate_reason"] = ""
         stage_rows.append(result)
 
+    manifest_stages = {int(mrow["stage"]) for _, mrow in manifest.iterrows()}
+
+    if observations is not None:
+        for _, orow in observations.iterrows():
+            obs_stage = int(orow["stage"])
+            if obs_stage in manifest_stages:
+                continue
+            placeholder: dict[str, Any] = {
+                "stage": obs_stage,
+                "missing_estimate_reason": "no_valid_falloff_manifest_row",
+                "fracture_initiation_status": "not_computed",
+                "tp_corrected_seconds": np.nan,
+                "tp_legacy_volume_over_rate_seconds": np.nan,
+                "tp_correction_ratio": np.nan,
+                "closure_was_computed": False,
+                "early_transient_risk": False,
+            }
+            placeholder.update(_empty_closure_fields())
+            placeholder.update(_empty_pkn_fields())
+            placeholder.update({
+                "raw_injected_volume_m3": np.nan,
+                "effective_injected_volume_m3": np.nan,
+                "perforation_friction_mpa": np.nan,
+                "pressure_at_shut_in_mpa": np.nan,
+                "pressure_for_net_mpa": np.nan,
+                "wellbore_storage_coeff_m3_per_mpa": np.nan,
+                "wellbore_storage_volume_m3": np.nan,
+                "volume_correction_warning": "no_valid_falloff_manifest_row",
+            })
+            for col in observations.columns:
+                if col != "stage":
+                    placeholder[col] = float(orow[col])
+            stage_rows.append(placeholder)
+
     summary = pd.DataFrame(stage_rows)
+    summary = summary.sort_values("stage", ignore_index=True)
 
     correlation: pd.DataFrame | None = None
     if observations is not None and len(summary) > 0:

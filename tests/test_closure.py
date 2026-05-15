@@ -403,6 +403,29 @@ class TestObservationCorrelation:
         assert pkn_micro.iloc[0]["pearson_r"] > 0
         assert pkn_micro.iloc[0]["n"] == 5
 
+    def test_observation_target_names_preserved(self):
+        """correlation target 必须包含 microseismic_affected_volume 和
+        electromagnetic_affected_area，不能出现 electromagnetic_half_length_m。"""
+        summary = pd.DataFrame({
+            "stage": [1, 2, 3, 4, 5],
+            "pkn_fracture_volume_m3": [10, 20, 30, 40, 50],
+            "effective_injected_volume_m3": [100, 200, 300, 400, 500],
+            "raw_injected_volume_m3": [110, 210, 310, 410, 510],
+            "selected_closure_pressure_mpa": [80, 82, 84, 86, 88],
+            "tp_corrected_seconds": [600, 700, 800, 900, 1000],
+            "tp_correction_ratio": [0.9, 0.92, 0.94, 0.96, 0.98],
+        })
+        observations = pd.DataFrame({
+            "stage": [1, 2, 3, 4, 5],
+            "microseismic_affected_volume": [100, 200, 300, 400, 500],
+            "electromagnetic_affected_area": [1000, 2000, 3000, 4000, 5000],
+        })
+        corr = build_observation_correlation_table(summary, observations)
+        targets = set(corr["target"].unique())
+        assert "microseismic_affected_volume" in targets
+        assert "electromagnetic_affected_area" in targets
+        assert "electromagnetic_half_length_m" not in targets
+
     def test_too_few_points_nan(self):
         summary = pd.DataFrame({
             "stage": [1, 2],
@@ -517,6 +540,119 @@ class TestCLIClosureBatchSmoke:
         assert (summary["closure_is_candidate"] == True).all()  # noqa: E712
         assert (summary["closure_is_final_interpretation"] == False).all()  # noqa: E712
         assert "closure_was_computed" in summary.columns
+
+    def test_observation_only_stages_get_placeholder(self, tmp_path: Path):
+        """manifest 只有 stage 1,2; observations 有 stage 1,2,3。
+        summary 应有 3 行，stage 3 为 placeholder。"""
+        stage_dir = tmp_path / "stage_data"
+        stage_dir.mkdir()
+
+        shut_in_1 = _write_synthetic_stage_csv(stage_dir / "stage_01.csv", n_pre=50, n_post=150)
+        shut_in_2 = _write_synthetic_stage_csv(stage_dir / "stage_02.csv", n_pre=50, n_post=150)
+
+        params = pd.DataFrame([
+            {"well": "W1", "stage": 1, "file": "stage_data/stage_01.csv",
+             "shut_in": shut_in_1, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25},
+            {"well": "W1", "stage": 2, "file": "stage_data/stage_02.csv",
+             "shut_in": shut_in_2, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25},
+        ])
+        params.to_csv(tmp_path / "stage_params.csv", index=False)
+
+        manifest = pd.DataFrame([
+            {"stage": 1, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+            {"stage": 2, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+        ])
+        manifest.to_csv(tmp_path / "manifest.csv", index=False)
+
+        observations = pd.DataFrame([
+            {"stage": 1, "microseismic_affected_volume": 150.0, "electromagnetic_affected_area": 18000.0},
+            {"stage": 2, "microseismic_affected_volume": 170.0, "electromagnetic_affected_area": 19000.0},
+            {"stage": 3, "microseismic_affected_volume": 200.0, "electromagnetic_affected_area": 20000.0},
+        ])
+        observations.to_csv(tmp_path / "observations.csv", index=False)
+
+        result = run_closure_batch(
+            stage_params_path=tmp_path / "stage_params.csv",
+            well_root=tmp_path,
+            manifest_path=tmp_path / "manifest.csv",
+            observations_path=tmp_path / "observations.csv",
+            volume_column="total_volume",
+            rate_time_unit="minute",
+            min_rate=10.0,
+            g_time_m=0.8,
+            closure_min_elapsed_seconds=5.0,
+            elapsed_duplicate_policy="keep-last",
+            pressure_source="estimated-bottomhole",
+        )
+
+        summary = result["summary"]
+        assert len(summary) == 3
+        assert set(summary["stage"].astype(int)) == {1, 2, 3}
+
+        s3 = summary[summary["stage"] == 3].iloc[0]
+        assert s3["missing_estimate_reason"] == "no_valid_falloff_manifest_row"
+        assert s3["selected_closure_status"] == "not_computed"
+        assert s3["pkn_volume_status"] == "not_computed"
+        assert s3["closure_was_computed"] == False  # noqa: E712
+        assert s3["closure_is_candidate"] == True  # noqa: E712
+        assert s3["closure_is_final_interpretation"] == False  # noqa: E712
+        assert s3["microseismic_affected_volume"] == 200.0
+        assert s3["electromagnetic_affected_area"] == 20000.0
+
+    def test_placeholder_rows_not_in_correlation_n(self, tmp_path: Path):
+        """placeholder NaN 不应增加 correlation n。
+        manifest stage 1,2 + observation stage 1,2,3 → correlation n 最多 2。"""
+        stage_dir = tmp_path / "stage_data"
+        stage_dir.mkdir()
+
+        shut_in_1 = _write_synthetic_stage_csv(stage_dir / "stage_01.csv", n_pre=50, n_post=150)
+        shut_in_2 = _write_synthetic_stage_csv(stage_dir / "stage_02.csv", n_pre=50, n_post=150)
+
+        params = pd.DataFrame([
+            {"well": "W1", "stage": 1, "file": "stage_data/stage_01.csv",
+             "shut_in": shut_in_1, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25},
+            {"well": "W1", "stage": 2, "file": "stage_data/stage_02.csv",
+             "shut_in": shut_in_2, "sigma_min": 75.0, "add_pressure": 40.0,
+             "hw": 15.0, "e_gpa": 30.0, "nu": 0.25},
+        ])
+        params.to_csv(tmp_path / "stage_params.csv", index=False)
+
+        manifest = pd.DataFrame([
+            {"stage": 1, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+            {"stage": 2, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 140.0},
+        ])
+        manifest.to_csv(tmp_path / "manifest.csv", index=False)
+
+        observations = pd.DataFrame([
+            {"stage": 1, "microseismic_affected_volume": 150.0, "electromagnetic_affected_area": 18000.0},
+            {"stage": 2, "microseismic_affected_volume": 170.0, "electromagnetic_affected_area": 19000.0},
+            {"stage": 3, "microseismic_affected_volume": 200.0, "electromagnetic_affected_area": 20000.0},
+        ])
+        observations.to_csv(tmp_path / "observations.csv", index=False)
+
+        result = run_closure_batch(
+            stage_params_path=tmp_path / "stage_params.csv",
+            well_root=tmp_path,
+            manifest_path=tmp_path / "manifest.csv",
+            observations_path=tmp_path / "observations.csv",
+            volume_column="total_volume",
+            rate_time_unit="minute",
+            min_rate=10.0,
+            g_time_m=0.8,
+            closure_min_elapsed_seconds=5.0,
+            elapsed_duplicate_policy="keep-last",
+            pressure_source="estimated-bottomhole",
+        )
+
+        corr = result["correlation"]
+        assert corr is not None
+        for _, row in corr.iterrows():
+            assert row["n"] <= 2
+            assert np.isnan(row["pearson_r"])
+            assert np.isnan(row["spearman_r"])
 
     def test_cli_closure_batch_no_observations(self, tmp_path: Path):
         stage_dir = tmp_path / "stage_data"

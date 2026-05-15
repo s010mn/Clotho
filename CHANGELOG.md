@@ -2680,3 +2680,45 @@ Branch: `sprint`
 - 不做 Excel / PNG / plot 输出；
 - 相关性只是统计相关，不是因果验证；
 - 严谨化 TODO 见 `TODO.md`。
+
+## Phase 5A.1 — deadline MVP observation-field and documentation fix
+
+Branch: `sprint`
+
+修正内容：
+
+- README `--wellbore-storage-coeff` 修正为 `--wellbore-storage-coeff-m3-per-mpa`；
+- README "当前不做"改为更准确的表述：当前 closure-batch 只做 deadline MVP 级别的 PKN / volume-balance estimate，仍不做 final calibrated PKN model / rigorous Carter / full volume-balance inversion 等；
+- TODO.md 补充 6 项：Barree tangent fit 不确定性与人工确认、射孔摩阻校准、井筒存储系数校准、液体类型/支撑剂修正、stage 4/25 缺失审查、最终论文 manual plot review；
+- observation fields 改用人类指定字段：`microseismic_affected_volume`、`electromagnetic_affected_area`；
+- stage 4 / 25 缺 valid falloff manifest row，作为 placeholder 输出 `missing_estimate_reason=no_valid_falloff_manifest_row`；
+- placeholder 行保留 observation 值但 estimate 字段为 NaN/not_computed；
+- correlation 只用 finite estimates（n=28），placeholder 不参与；
+- 新增 3 个测试：observation target names preserved、missing stage placeholder rows、placeholder rows not in correlation n；
+- reference smoke 改用 exact observations CSV（30 stages），输出 30-row summary；
+- closure outputs remain candidates, not final interpretation。
+
+Reference smoke 输出位于：
+
+```text
+/tmp/gfunction-ref-audit-phase5a1/closure_volume_stage_summary.csv
+/tmp/gfunction-ref-audit-phase5a1/closure_volume_correlations.csv
+/tmp/gfunction-ref-audit-phase5a1/closure_volume_stage_summary_cwb0p1.csv
+/tmp/gfunction-ref-audit-phase5a1/closure_volume_correlations_cwb0p1.csv
+```
+
+Smoke 摘要：
+
+```text
+rows: 30 (28 computed + 2 placeholder: stage 4, 25)
+closure methods: barree=27, mcclure=1, none=2 (placeholder)
+pkn_volume_status: ok=28, not_computed=2
+closure_is_candidate=True (all 30)
+closure_is_final_interpretation=False (all 30)
+correlation n=28 (placeholder excluded)
+key correlations (baseline):
+  effective_injected_volume_m3 vs electromagnetic_affected_area: pearson=0.81
+  pkn_fracture_volume_m3 vs electromagnetic_affected_area: pearson=0.34
+  pkn_fracture_volume_m3 vs microseismic_affected_volume: pearson=0.25
+cwb=0.1 sensitivity: effective volume decreased in all 28 stages, correlations stable
+```

@@ -67,3 +67,42 @@ MVP 的闭合结果都是 candidate，不是最终论文级模型。
 - Barree tangent fit fraction sensitivity；
 - PKN 参数（E, nu, h_f）的 Monte Carlo 或区间分析；
 - 多方法（Barree vs. McClure）的 candidate 离散度统计。
+
+## 13. Barree tangent fit 不确定性与人工确认
+
+当前 Barree tangent 只输出一个 candidate，没有 fit 不确定性区间。
+最终论文工作流必须包含人工 plot review 确认 tangent departure 位置。
+fit_fraction 和 residual_sigma_factor 的 sensitivity 也需要量化。
+
+## 14. 射孔摩阻公式/单位校准
+
+当前 `perforation_friction_mpa` 作为用户输入常数。
+需要根据射孔参数（孔密度、孔径、孔数）和排量估算射孔摩阻，
+并校准单位一致性（MPa vs. psi）。
+
+## 15. 井筒存储系数校准
+
+当前 `wellbore_storage_coeff_m3_per_mpa` 作为用户输入常数。
+需要根据井筒几何（井径、完井液压缩系数、井深）估算 C_wb，
+或通过 early-time 压力响应拟合。
+
+## 16. 有效进缝液量的液体类型/支撑剂修正
+
+当前有效进缝液量只做井筒存储和射孔摩阻修正。
+如果获得滑溜水/胶液/支撑剂分段注入数据，
+需要按液体类型密度和支撑剂体积分数修正有效液量。
+
+## 17. Stage 4 / 25 缺失有效压降候选人工审查
+
+Stage 4 和 25 在 Phase 4K manifest 中缺失（无 valid falloff candidate）。
+需要人工审查原始曲线，判断是否存在可用压降窗口，
+或确认为 active bleedoff / 数据缺失。
+
+## 18. 最终论文工作流必须包含人工 plot review
+
+最终论文级闭合压力判定不能只依赖自动 candidate。
+工作流必须要求：
+- 人工查看 G·dP/dG vs G plot 确认 tangent departure；
+- 人工查看 dP/dG vs G plot 确认 compliance minimum；
+- 人工对比 Barree 和 McClure candidate 是否一致；
+- 人工确认 closure 结果后才标记 closure_is_final_interpretation=True。

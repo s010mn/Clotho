@@ -46,18 +46,20 @@ stage 参数表
 
 ## 当前不做
 
+当前 `closure-batch` 只做 deadline MVP 级别的 PKN / volume-balance estimate。
 Clotho 当前仍然不自动执行：
 
-- closure diagnostics；
-- closure pressure picking；
+- final calibrated PKN model；
+- rigorous Carter leakoff integration；
+- full volume-balance inversion；
+- closure diagnostics（自动诊断）；
+- final closure-pressure interpretation；
 - ISIP / closure 自动解释；
 - pressure smoothing；
 - automatic active-bleedoff detection；
 - resampling；
-- Carter leakoff；
-- PKN；
 - stress-shadow；
-- volume balance；
+- cluster allocation；
 - fracture inversion；
 - Excel / PNG reporting。
 
@@ -264,7 +266,7 @@ uv run python -m clotho closure-batch \
   --rate-time-unit minute \
   --min-rate 10 \
   --g-time-m 0.8 \
-  --wellbore-storage-coeff 0.01
+  --wellbore-storage-coeff-m3-per-mpa 0.01
 ```
 
 说明：
