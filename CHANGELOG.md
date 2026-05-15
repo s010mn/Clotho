@@ -2722,3 +2722,31 @@ key correlations (baseline):
   pkn_fracture_volume_m3 vs microseismic_affected_volume: pearson=0.25
 cwb=0.1 sensitivity: effective volume decreased in all 28 stages, correlations stable
 ```
+
+## Phase 5B — group-meeting summary pack
+
+Branch: `sprint`
+
+新增文件：
+
+- `GROUP_MEETING_SUMMARY.md`：组会汇报摘要，中文为主
+
+内容：
+
+- 汇总 Phase 5A / 5A.1 smoke 结果（30 rows, 28 computed, stage 4/25 placeholder）；
+- 记录 exact observation targets：microseismic_affected_volume, electromagnetic_affected_area；
+- 记录核心相关性（EM area vs effective volume Pearson=0.81, Spearman=0.25）；
+- 井筒存储 sensitivity（cwb=0, 0.1, 1.0）和射孔摩阻 sensitivity（perf=1.0 MPa）；
+- cwb=1.0 最大 storage volume 15.64 m3，effective volume 变化 < 0.5%，相关性几乎不变；
+- perf=1.0 MPa 对 PKN volume 相关性影响 < 0.01；
+- 明确 closure outputs remain candidates，not final interpretation；
+- 引用 TODO.md 未完成工作清单；
+- 禁止表述清单：不能写"已确定闭合压力"、"体积反演已验证有效"等。
+
+边界：
+
+- 不新增模型公式；
+- 不做 plots / Excel / PNG；
+- 不提交真实数据；
+- 不 push master；
+- sensitivity 输出在 /tmp/gfunction-ref-audit-phase5b/，不提交。
