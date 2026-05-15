@@ -3467,3 +3467,92 @@ Scope confirmation:
 - no push master；
 - closure remains candidate；
 - no validation claim.
+
+## Phase 5G：targeted grid refinement and residual correlation
+
+Phase 5G continued from the accepted real well4 Phase 5F.1 smoke, but did not
+promote it to a final grid conclusion.
+
+Targeted grid size check:
+
+```text
+requested secondary-space cases: 179,625,600
+full core cases after secondary compression: 453,600
+```
+
+Because `453,600 > 100,000`, the full targeted core was not hard-run. The Phase 5G
+artifact is therefore a diagnostic reconstruction around the real 5F.1 288 cases:
+
+```text
+output_dir: /tmp/gfunction-ref-audit-phase5g/
+diagnostic_reconstructed_cases: 288
+physical_plausibility_pass cases: 100
+positive_candidates rows: 1408
+robust_candidates rows: 332
+grouped_correlations rows: 32256
+leave_one_out rows: 252
+residual_correlations rows: 6912
+max reconstruction Pearson delta: 0.122
+```
+
+New diagnostics written outside the repo:
+
+- `/tmp/gfunction-ref-audit-phase5g/grouped_correlations.csv`
+- `/tmp/gfunction-ref-audit-phase5g/leave_one_out_candidates.csv`
+- `/tmp/gfunction-ref-audit-phase5g/residual_correlations.csv`
+- `/tmp/gfunction-ref-audit-phase5g/reconstruction_case_correlation_audit.csv`
+- `/tmp/gfunction-ref-audit-phase5g/figures/`
+
+The requested Chinese font
+`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc` was missing in the local
+environment, so PNG generation was skipped and `*.skipped.txt` markers plus an
+available-font list were written under `/tmp/gfunction-ref-audit-phase5g/`.
+
+Stage-type and outlier findings:
+
+- `stage_type` groups used:
+  - `missing_falloff`: 4,25
+  - `fracture_influenced`: 2,3,5,6,7
+  - `fault`: 24
+  - `main`: all others
+- `fracture_influenced_only` is low-n (`n=5`) and not used as a main conclusion.
+- `main_only` best physical-pass row is nonstorage vs microseismic:
+  Pearson +0.373, Spearman +0.355, n=22.
+- Stage 24 drives the strongest EM positive candidates:
+  - leakoff proxy vs EM: +0.572 full, +0.010 without stage 24;
+  - nonstorage proxy vs EM: +0.572 full, +0.010 without stage 24;
+  - raw/effective injected volume vs EM: +0.807 full, +0.341 without stage 24;
+  - legacy MVP vs EM: +0.337 full, -0.001 without stage 24.
+
+Residual correlation findings:
+
+- raw/effective injected volume vs EM remains the dominant control.
+- leakoff/nonstorage vs EM raw Pearson is about +0.572 in the best physical-pass
+  case, but residual Pearson after controlling injected volume is about -0.077.
+- legacy MVP vs EM raw Pearson is about +0.337, but residual Pearson after
+  controlling raw volume is approximately 0.
+- physical PKN storage vs EM remains weak: best physical-pass raw Pearson about
+  +0.068, residual about +0.104.
+- leakoff/nonstorage vs microseismic is more stable in direction, but the best
+  physical-pass all-stage raw Pearson in the reconstruction is about +0.288,
+  below the Pearson > 0.3 candidate line.
+
+Interpretation recorded for group meeting:
+
+- physical PKN storage is not a stable positive correlate of external affected
+  volume in the current smoke;
+- EM is strongly tied to raw/effective injected volume and stage 24;
+- leakoff/nonstorage proxy has EM raw positives, but they are outlier-driven and
+  mostly disappear after injection-size residualization;
+- current evidence points more toward construction scale / fluid propagation /
+  connectivity than main-fracture storage volume.
+
+Scope confirmation:
+
+- no PKN formula change；
+- no I_F change；
+- no H_w default change；
+- no real data added to repo；
+- no `/tmp` CSV/PNG committed；
+- no push master；
+- no validation claim.

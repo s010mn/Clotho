@@ -278,7 +278,116 @@ Outlier caution：
 - 物理可信子集 vs 全集，正相关分布有没有显著漂移？
 - 正相关是否主要来自 raw / effective injected volume（即不依赖 PKN 物理）？
 
-## 8. 不能写成什么
+## 8. Phase 5G：真实 well4 targeted grid 与相关性排查
+
+### 8.1 为什么 Phase 5F synthetic smoke 不能用
+
+Phase 5F synthetic smoke 只验证 CLI mechanics，不作为物理结果，也不作为 well4 科研结论。
+Phase 5F.1 恢复真实 well4 数据后，288-case real coarse grid 才开始有科研意义。
+
+### 8.2 Real well4 coarse grid 复盘
+
+Phase 5F.1 real well4 coarse grid：
+
+- actual cases：288；
+- `H_w=30,40,50,60 m`；
+- `grid_positive_candidates.csv`：1408 rows；
+- `grid_robust_positive_candidates.csv`：332 rows；
+- `physical_plausibility_pass=True`：100/288 cases；
+- `grid_failed_cases.csv`：0 rows；
+- physical PKN storage 没有 positive candidate；
+- raw/effective injected volume vs EM 为最强 control：Pearson +0.807，Spearman +0.250；
+- leakoff/nonstorage vs EM 可到 Pearson +0.556，但 Spearman 只有 +0.107，且受 stage 24 强影响。
+
+### 8.3 Targeted refinement 尺寸检查
+
+按 Phase 5G 指定核心轴展开：
+
+```text
+requested secondary-space cases: 179,625,600
+full core cases after secondary compression: 453,600
+```
+
+`453,600 > 100,000`，按本阶段规则不能硬跑。因此本轮没有把它冒充为 expanded targeted
+grid result，而是输出 Phase 5F.1 real cases 的 stage-level diagnostic reconstruction：
+
+```text
+diagnostic_reconstructed_cases: 288
+grouped_correlations rows: 32,256
+leave_one_out rows: 252
+residual_correlations rows: 6,912
+max reconstruction Pearson delta: 0.122
+```
+
+输出目录：
+
+```text
+/tmp/gfunction-ref-audit-phase5g/
+```
+
+### 8.4 Stage-type 分组
+
+分组定义：
+
+- `missing_falloff`: stage 4,25；
+- `fracture_influenced`: stage 2,3,5,6,7；
+- `fault`: stage 24；
+- `main`: 其余 stage。
+
+物理可信子集中的代表性 best rows：
+
+| group | best metric | target | n | Pearson | Spearman | 说明 |
+|---|---|---:|---:|---:|---:|---|
+| all_computed | effective_injected_volume_m3 | EM | 28 | +0.807 | +0.250 | 施工规模 control，不是 PKN 反演体积 |
+| main_only | pkn_nonstorage_volume_m3 | microseismic | 22 | +0.373 | +0.355 | 分层后 microseismic 正相关增强 |
+| exclude_fault_stage24 | effective_injected_volume_m3 | EM | 27 | +0.341 | +0.164 | 删除 stage 24 后 EM 相关性大幅下降 |
+| exclude_fracture_influenced | effective_injected_volume_m3 | EM | 23 | +0.805 | +0.222 | 删除 fracture-influenced stages 后仍强 |
+| main_plus_fracture_exclude_fault | effective_injected_volume_m3 | EM | 27 | +0.341 | +0.164 | 与 exclude stage 24 一致 |
+
+`fracture_influenced_only` 只有 5 段，全部 low-n，不作为主结论。
+
+### 8.5 Stage 24 / outlier 影响
+
+Leave-one-out 显示 stage 24 是 EM 正相关的主要来源之一：
+
+| candidate | full Pearson | drop stage 24 Pearson | delta |
+|---|---:|---:|---:|
+| leakoff proxy vs EM | +0.572 | +0.010 | -0.562 |
+| nonstorage proxy vs EM | +0.572 | +0.010 | -0.562 |
+| raw volume vs EM | +0.807 | +0.341 | -0.466 |
+| effective volume vs EM | +0.807 | +0.341 | -0.466 |
+| legacy MVP vs EM | +0.337 | -0.001 | -0.338 |
+
+因此 leakoff/nonstorage vs EM 不能作为主结论；它是 outlier-driven candidate。
+physical storage vs EM 本身很弱，删除 stage 24 后从 +0.068 到 +0.211，仍低于
+Pearson > 0.3。
+
+### 8.6 控制注入规模后的 residual correlation
+
+raw/effective injected volume vs EM 是强 control。控制 raw/effective injected volume 后：
+
+| metric | target | raw Pearson | residual Pearson | 解释 |
+|---|---|---:|---:|---|
+| pkn_leakoff_volume_m3 | EM | +0.572 | -0.077 | 正相关主要由注入规模 / stage 24 驱动 |
+| pkn_nonstorage_volume_m3 | EM | +0.572 | -0.077 | 无独立 EM 解释力 |
+| legacy_mvp_pkn_fracture_volume_m3 | EM | +0.337 | ~0.000 | 主要是注入规模变形 |
+| pkn_fracture_volume_m3 | EM | +0.068 | +0.104 | physical storage 本来就弱 |
+
+对 microseismic，leakoff/nonstorage 在物理可信子集的 best raw Pearson 约 +0.288，
+residual Pearson 约 +0.266，低于 Phase 5G 的 Pearson > 0.3 候选线，但方向相对稳定。
+
+### 8.7 Phase 5G 可讲结论
+
+- physical PKN storage 与外部波及量没有稳定正相关；
+- EM 与 raw/effective injected volume 存在强线性相关；
+- leakoff/nonstorage proxy 对 EM 的 raw Pearson 可以较高，但删除 stage 24 或控制注入规模后几乎消失；
+- main-only 分组中 nonstorage/leakoff 对 microseismic 有一定正相关，但仍是候选，不是最终解释；
+- 当前最合理的解释是：外部观测更接近施工规模、流体传播、波及或连通性，而不是主裂缝 storage volume；
+- 下一步应做人工闭合复核、C/stable segment 校准、stage-type 分层和有效进缝液量物理校准。
+
+本轮没有改 PKN 公式、没有改 I_F、没有改 H_w 默认值。
+
+## 9. 不能写成什么
 
 - ❌ “网格搜索证明 PKN 模型正确”——网格搜索只列灵敏度，不做 hypothesis test；
 - ❌ “随便换一组参数就能得到 Pearson > 0.3”——任何单点结果都要先看 robust 候选
@@ -287,7 +396,7 @@ Outlier caution：
   ——raw_volume 与 PKN 物理 *无关*，它只反映总注入规模；
 - ❌ “删除负相关”——`grid_cases.csv` 永远保留全部 case，包括 negative。
 
-## 9. 组会可讲的两类结论
+## 10. 组会可讲的两类结论
 
 如果发现 **robust positive candidate**：
 
@@ -303,7 +412,7 @@ Outlier caution：
 > 复核，或 (b) PKN 主裂缝体积本身不能直接对应到微地震 / 电磁观测口径，
 > 需要更明确的几何/物理映射。
 
-## 10. 边界
+## 11. 边界
 
 - I_F = 0.722464726919 不变；
 - H_w 默认值 = 50 m 不变；Phase 5F.1 允许 `--pkn-Hw-grid` 做 30-60 m 敏感性；
