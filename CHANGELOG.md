@@ -2829,7 +2829,7 @@ legacy MVP pkn vs microseismic: Pearson=0.248 (from Phase 5A)
 
 测试：148 passed（140 old + 8 new physical PKN tests）。
 
-边界：
+边界（5D）：
 
 - closure outputs remain candidates, not final interpretation；
 - I_F=0.722464726919 integral expression confirmation remains TODO；
@@ -2871,8 +2871,45 @@ GROUP_MEETING_GFUNCTION_VOLUME.md 更新：
 - negative correlation 历史仍保留；
 - 不声称验证成功或失败。
 
-边界：
+边界（5D.1）：
 
+- closure outputs remain candidates, not final interpretation；
+- I_F=0.722464726919 integral expression confirmation remains TODO；
+- 不提交 PNG / CSV / 真实数据；
+- 不 push master。
+
+## Phase 5D.2 — restore full-stage physical PKN reporting
+
+Branch: `sprint`
+
+诊断：Phase 5D.1 的 pkn_ok=3 是因为使用了 Phase 4D manifest（3 stages）而非 Phase 4K manifest（28 stages）。代码逻辑正确：physical PKN 已使用 selected closure candidate（Barree 优先, McClure 备选），没有 Barree-only gating。
+
+核心变更：
+
+- 使用 Phase 4K keep-last manifest（28 valid stages）重跑 full 30-stage smoke；
+- 新增 3 tests：PHYSICAL_PKN_IF constant 验证、McClure fallback 产出 physical PKN、CLI McClure fallback stage smoke；
+- GROUP_MEETING_GFUNCTION_VOLUME.md 替换为 n=28 full-stage physical PKN 结果；
+- 散点图重生成到 /tmp/gfunction-ref-audit-phase5d2/figures/；
+- 151 tests pass（148 + 3 new）。
+
+Reference smoke（well4, 30 stages, I_F=0.722464726919, Phase 4K manifest）：
+
+```text
+rows: 30
+pkn_ok: 28 (27 barree + 1 mcclure), not_computed: 2 (stage 4, 25 placeholder)
+physical pkn_fracture_volume_m3 vs microseismic: Pearson=-0.259, Spearman=-0.292 (n=28)
+physical pkn_fracture_volume_m3 vs electromagnetic: Pearson=0.075, Spearman=0.170 (n=28)
+no-shadow control: identical total volumes (shadow changes cluster allocation only)
+legacy MVP pkn vs microseismic: Pearson=0.248, Spearman=0.205 (n=28)
+legacy MVP pkn vs electromagnetic: Pearson=0.335, Spearman=0.062 (n=28)
+stage 5: barree not_found, mcclure ok, physical PKN ok (McClure fallback confirmed)
+```
+
+negative correlation 确认：physical PKN 体积与微地震波及体积呈负相关（Pearson -0.259, n=28），是科研结果，不是 bug。
+
+边界（5D.2）：
+
+- 30-stage full-well table, 28 computed, 2 explicit placeholders；
 - closure outputs remain candidates, not final interpretation；
 - I_F=0.722464726919 integral expression confirmation remains TODO；
 - 不提交 PNG / CSV / 真实数据；

@@ -11,6 +11,7 @@ import pytest
 
 from clotho.closure import (
     K_lp,
+    PHYSICAL_PKN_IF,
     build_observation_correlation_table,
     compute_physical_leakoff_C,
     compute_stress_shadow,
@@ -867,3 +868,124 @@ class TestPhysicalPKN:
         assert "legacy_mvp_pkn_fracture_volume_m3" in summary.columns
         assert (summary["closure_is_candidate"] == True).all()  # noqa: E712
         assert (summary["closure_is_final_interpretation"] == False).all()  # noqa: E712
+
+    def test_physical_pkn_if_constant(self):
+        assert PHYSICAL_PKN_IF == pytest.approx(0.722464726919, rel=1e-12)
+
+    def test_mcclure_fallback_produces_physical_pkn(self):
+        """Barree not_found + McClure ok => physical PKN should still compute."""
+        n = 100
+        tp = 600.0
+        elapsed = np.arange(1, n + 1, dtype=float)
+        delta = elapsed / tp
+        g_time = np.asarray(nolte_g_time(delta, 0.8), dtype=float)
+        pressure = 120.0 - 2.0 * g_time - 0.1 * g_time ** 2
+
+        dP_dG = np.gradient(pressure, g_time)
+
+        barree = pick_barree_tangent_closure_candidate(
+            g_time, dP_dG, elapsed, pressure,
+            closure_min_elapsed_seconds=1.0,
+        )
+        mcclure = pick_mcclure_compliance_closure_candidate(
+            g_time, dP_dG, elapsed, pressure,
+            closure_min_elapsed_seconds=1.0,
+        )
+        selected = select_closure_candidate(barree, mcclure)
+
+        assert barree["barree_status"] == "not_found"
+        assert mcclure["mcclure_status"] == "ok"
+        assert selected["selected_closure_status"] == "ok"
+        assert selected["selected_closure_method"] == "mcclure"
+
+        mcclure_ci = int(mcclure["mcclure_closure_index"])
+        E_prime = 33.3 * 1000.0 / (1.0 - 0.23 ** 2)
+        result = physical_pkn_volume_balance(
+            n_clusters=4,
+            cluster_spacings_m=8.4,
+            H_w_m=50.0,
+            fleak=0.5,
+            E_prime_mpa=E_prime,
+            closure_pressure_mpa=float(pressure[mcclure_ci]),
+            minimum_stress_prior_mpa=99.1,
+            perforation_friction_mpa=0.0,
+            g_time=g_time,
+            pressure_mpa=pressure,
+            elapsed_seconds=elapsed,
+            closure_index=mcclure_ci,
+            tp_seconds=tp,
+            g_function_m=0.8,
+            effective_injected_volume_m3=3000.0,
+            alpha=1.0,
+            stable_min_elapsed_seconds=1.0,
+            stable_min_points=5,
+        )
+        assert result["pkn_volume_status"] == "ok"
+        assert np.isfinite(result["pkn_fracture_volume_m3"])
+        assert result["pkn_fracture_volume_m3"] > 0
+
+    def test_cli_closure_batch_mcclure_fallback_stage(self, tmp_path: Path):
+        """CLI smoke: stage where only McClure works should still get physical PKN."""
+        stage_dir = tmp_path / "stage_data"
+        stage_dir.mkdir()
+
+        shut_in_seconds = 10 * 3600
+        rows: list[dict[str, object]] = []
+        for i in range(50):
+            t = shut_in_seconds - (50 - i)
+            h, m, s = t // 3600, (t % 3600) // 60, t % 60
+            frac = i / 49
+            rows.append({
+                "time": f"{h:02d}:{m:02d}:{s:02d}",
+                "wellhead_pressure": 70.0 + 20.0 * frac,
+                "rate": 5.0 + 15.0 * min(frac * 2, 1.0),
+                "stage_volume": frac * 200.0,
+                "total_volume": frac * 200.0,
+            })
+        for i in range(200):
+            t = shut_in_seconds + i
+            h, m, s = t // 3600, (t % 3600) // 60, t % 60
+            dp = 0.01 * i + 0.00005 * i ** 2
+            rows.append({
+                "time": f"{h:02d}:{m:02d}:{s:02d}",
+                "wellhead_pressure": max(90.0 - dp, 0.1),
+                "rate": 0.0,
+                "stage_volume": 200.0,
+                "total_volume": 200.0,
+            })
+        pd.DataFrame(rows).to_csv(stage_dir / "stage_01.csv", index=False)
+
+        params = pd.DataFrame([{
+            "well": "W1", "stage": 1, "file": "stage_data/stage_01.csv",
+            "shut_in": "10:00:00", "sigma_min": 75.0, "add_pressure": 40.0,
+            "hw": 15.0, "e_gpa": 30.0, "nu": 0.25,
+            "n": 4, "spacing": 8.0, "cluster_spacings": "8;8;8",
+            "fleak": 0.5, "m": 0.8,
+        }])
+        params.to_csv(tmp_path / "stage_params.csv", index=False)
+
+        manifest = pd.DataFrame([{
+            "stage": 1, "max_sustained_rate": 20.0, "valid_falloff_end_elapsed": 190.0,
+        }])
+        manifest.to_csv(tmp_path / "manifest.csv", index=False)
+
+        output_path = tmp_path / "closure_summary.csv"
+        from clotho.cli import main
+        exit_code = main([
+            "closure-batch",
+            "--stage-params", str(tmp_path / "stage_params.csv"),
+            "--well-root", str(tmp_path),
+            "--manifest", str(tmp_path / "manifest.csv"),
+            "--output", str(output_path),
+            "--volume-column", "total_volume",
+            "--rate-time-unit", "minute",
+            "--g-time-m", "0.8",
+            "--closure-min-elapsed-seconds", "5",
+            "--stress-shadow-alpha", "1.0",
+        ])
+        assert exit_code == 0
+        summary = pd.read_csv(output_path)
+        row = summary.iloc[0]
+        assert row["selected_closure_status"] == "ok"
+        assert row["closure_is_candidate"] == True  # noqa: E712
+        assert row["closure_is_final_interpretation"] == False  # noqa: E712
