@@ -2599,3 +2599,84 @@ Key stages：
 - stage 29：medium boundary / small-duplicate example；`early_transient_risk=False` because full abs max is at 1087.0 s, outside 15 s window。
 
 这仍然不是 closure，也不是 water-hammer diagnosis。
+
+## Phase 5A — deadline closure-volume MVP
+
+Branch: `sprint`
+
+目标：实现组会可汇报的 closure-volume MVP，包括自动闭合候选、裂缝体积估算和观测相关性对照。
+这不是最终论文级模型。所有闭合结果标记 `closure_is_candidate=True, closure_is_final_interpretation=False`。
+
+新增文件：
+
+- `src/clotho/closure.py`：全部闭合分析函数
+- `tests/test_closure.py`：25 个 synthetic-data 测试
+- `TODO.md`：12 项未完成的严谨物理工作
+
+修改文件：
+
+- `src/clotho/cli.py`：新增 `closure-batch` 子命令
+- `README.md`：新增 closure-batch 文档和代码结构更新
+- `CHANGELOG.md`：本条目
+
+### closure.py 功能清单
+
+1. `pick_fracture_initiation_candidate()`：自动起裂候选 + corrected tp
+   - sigma_min crossing rule + rate fallback
+   - 支持 `time` 和 `time_text` 列名
+2. `pick_barree_tangent_closure_candidate()`：G·dP/dG 偏离 normal leakoff 直线
+   - 前 30% 拟合 + 2-sigma 偏离检测
+   - `closure_min_elapsed_seconds` 默认 15 s (Phase 4N1 early transient guard)
+3. `pick_mcclure_compliance_closure_candidate()`：dP/dG 局部极小 screening
+   - 不是完整 nonlinear compliance inversion
+   - 排除首尾 5% boundary
+4. `select_closure_candidate()`：barree-then-mcclure 优先级选择
+5. `effective_volume_correction()`：有效进缝液量修正
+   - wellbore storage: `V_storage = C_wb * max(P_shut - P_closure, 0)`
+   - perforation friction 作为压力修正
+6. `pkn_volume_balance_estimate()`：简化 PKN 裂缝体积估算
+   - Sneddon 平面应变宽度 `w = net_p * h_f / (2 * E')`
+   - Carter 泄失粗估 `C_L = |slope| * h_f / (4 * E' * sqrt(tp))`
+7. `build_observation_correlation_table()`：Pearson + Spearman 相关性
+   - Spearman 用 rank-based Pearson 实现，不依赖 scipy
+   - n < 3 时返回 NaN
+8. `run_closure_batch()`：manifest-driven batch 闭合分析
+9. `write_closure_batch_outputs()`：CSV 输出，parent directory 必须存在
+
+### CLI closure-batch 参数
+
+```text
+--stage-params, --well-root, --manifest, --output
+--observations (可选), --correlation-output (可选)
+--volume-column, --rate-time-unit, --min-rate, --g-time-m
+--elapsed-duplicate-policy, --closure-min-elapsed-seconds
+--pressure-source, --perforation-friction-mpa
+--wellbore-storage-coeff, --method-preference, --well
+```
+
+### 测试覆盖
+
+25 个测试：
+- TestFractureInitiation: 5 tests (sigma_min, fallback, no sigma, corrected tp, legacy tp)
+- TestBarreeTangentClosure: 2 tests (finds closure, respects min elapsed)
+- TestMcClureComplianceClosure: 2 tests (finds minimum, respects min elapsed)
+- TestEarlyTransientGuard: 1 test (spike in 0-10s, closure after 15s)
+- TestSelectClosureCandidate: 3 tests (prefers barree, fallback, both failed)
+- TestEffectiveVolumeCorrection: 4 tests (basic, no closure, perf friction, not negative)
+- TestPKNVolumeBalance: 4 tests (basic, missing modulus, missing closure, no leakoff)
+- TestObservationCorrelation: 2 tests (positive correlation, too few points)
+- TestCLIClosureBatchSmoke: 2 tests (with observations, without observations)
+
+### 边界
+
+- 所有闭合结果是 candidate，不是 final interpretation；
+- 不做 pressure smoothing；
+- 不做 resampling；
+- 不做 automatic active-bleedoff detection；
+- 不做 stress-shadow；
+- 不做 cluster allocation；
+- 不做 ISIP auto-picking；
+- 不做 multiple closure event detection；
+- 不做 Excel / PNG / plot 输出；
+- 相关性只是统计相关，不是因果验证；
+- 严谨化 TODO 见 `TODO.md`。

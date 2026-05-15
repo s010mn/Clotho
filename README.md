@@ -34,7 +34,15 @@ stage 参数表
 - derivative-readiness 数据质量检查；
 - 压力对 G-time 的导数预览：`dP/dG` 和 `G dP/dG`；
 - 导数 CSV 导出；
-- `derivative-batch` 批量复现实验入口。
+- `derivative-batch` 批量复现实验入口；
+- deadline closure-volume MVP（`closure-batch`）：
+  - 自动裂缝起裂候选 + 修正 tp；
+  - Barree tangent closure candidate；
+  - McClure-style compliance closure candidate；
+  - 有效进缝液量修正（井筒存储 + 射孔摩阻）；
+  - PKN / volume-balance 裂缝体积估算；
+  - 观测相关性对照（微地震/电磁）；
+  - 所有结果标记 `closure_is_candidate=True, closure_is_final_interpretation=False`。
 
 ## 当前不做
 
@@ -79,12 +87,14 @@ Clotho 当前仍然不自动执行：
 │       ├── __main__.py
 │       ├── batch.py
 │       ├── cli.py
+│       ├── closure.py
 │       ├── g_function.py
 │       ├── pressure_derivative.py
 │       └── stage_data.py
 └── tests/
     ├── test_basic.py
     ├── test_batch.py
+    ├── test_closure.py
     ├── test_g_function.py
     ├── test_pressure_derivative.py
     └── test_stage_data.py
@@ -214,6 +224,56 @@ uv run python -m clotho derivative-context \
 ```
 
 `derivative-context` 不做 closure、不挑闭合压力、不自动解释导数曲线、不生成图或 Excel。
+
+## deadline closure-volume MVP（closure-batch）
+
+manifest CSV 示例：
+
+```csv
+stage,max_sustained_rate,valid_falloff_end_elapsed
+1,19.94,1200
+10,20.04,1126
+29,20.06,1087
+```
+
+运行（不带观测数据）：
+
+```bash
+uv run python -m clotho closure-batch \
+  --stage-params /path/to/well/stage_params.csv \
+  --well-root /path/to/well \
+  --manifest /tmp/manifest.csv \
+  --output /tmp/closure_summary.csv \
+  --volume-column total_volume \
+  --rate-time-unit minute \
+  --min-rate 10 \
+  --g-time-m 0.8
+```
+
+运行（带观测数据 + wellbore storage sensitivity）：
+
+```bash
+uv run python -m clotho closure-batch \
+  --stage-params /path/to/well/stage_params.csv \
+  --well-root /path/to/well \
+  --manifest /tmp/manifest.csv \
+  --observations /tmp/observations.csv \
+  --output /tmp/closure_summary.csv \
+  --correlation-output /tmp/correlation.csv \
+  --volume-column total_volume \
+  --rate-time-unit minute \
+  --min-rate 10 \
+  --g-time-m 0.8 \
+  --wellbore-storage-coeff 0.01
+```
+
+说明：
+
+- 所有闭合结果标记 `closure_is_candidate=True, closure_is_final_interpretation=False`；
+- 这是组会可汇报的 MVP，不是最终论文级模型；
+- 相关性输出只是统计相关，不是因果验证；
+- 严谨化 TODO 见 `TODO.md`；
+- 输出 parent directory 必须存在，不自动 mkdir。
 
 ## 数据边界
 

@@ -9,6 +9,7 @@ import pandas as pd
 
 from clotho import __version__
 from clotho.batch import run_derivative_batch
+from clotho.closure import run_closure_batch, write_closure_batch_outputs
 from clotho.g_function import nolte_g_time
 from clotho.pressure_derivative import derivative_value_summary, pressure_derivative_against_g_time
 from clotho.review import (
@@ -226,6 +227,29 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Number of neighboring rows before and after each center row.",
     )
+
+    closure_batch = subparsers.add_parser(
+        "closure-batch",
+        help="Run manifest-driven batch closure candidate analysis with volume balance and observation correlation.",
+    )
+    closure_batch.add_argument("--stage-params", required=True, type=Path, help="stage_params.csv path.")
+    closure_batch.add_argument("--well-root", required=True, type=Path, help="Well directory containing stage_data/.")
+    closure_batch.add_argument("--manifest", required=True, type=Path, help="Manual manifest CSV path (stage, max_sustained_rate, valid_falloff_end_elapsed).")
+    closure_batch.add_argument("--observations", default=None, type=Path, help="Optional observations CSV for correlation (stage + metric columns).")
+    closure_batch.add_argument("--output", required=True, type=Path, help="Per-stage closure-volume summary CSV output path.")
+    closure_batch.add_argument("--correlation-output", default=None, type=Path, help="Optional correlation summary CSV output path.")
+    closure_batch.add_argument("--volume-column", default="total_volume", help="Cumulative volume column.")
+    closure_batch.add_argument("--rate-time-unit", choices=["second", "minute"], default="minute", help="Rate time unit.")
+    closure_batch.add_argument("--min-rate", default=10.0, type=float, help="Rate threshold for fracture initiation candidate.")
+    closure_batch.add_argument("--g-time-m", default=0.8, type=float, help="Nolte G-time m parameter.")
+    closure_batch.add_argument("--elapsed-duplicate-policy", choices=["none", "keep-first", "keep-last", "mean"], default="keep-last", help="Duplicate elapsed handling.")
+    closure_batch.add_argument("--closure-min-elapsed-seconds", default=15.0, type=float, help="Minimum elapsed seconds before searching for closure candidates.")
+    closure_batch.add_argument("--large-abs-dpdg-threshold", default=10000.0, type=float, help="Large absolute dP/dG threshold.")
+    closure_batch.add_argument("--pressure-source", choices=["estimated-bottomhole", "wellhead"], default="estimated-bottomhole", help="Pressure column for analysis.")
+    closure_batch.add_argument("--perforation-friction-mpa", default=0.0, type=float, help="Perforation friction pressure correction (MPa).")
+    closure_batch.add_argument("--wellbore-storage-coeff-m3-per-mpa", default=0.0, type=float, help="Wellbore storage coefficient for volume correction.")
+    closure_batch.add_argument("--method-preference", choices=["barree", "mcclure", "barree-then-mcclure", "mcclure-then-barree"], default="barree-then-mcclure", help="Closure candidate method preference.")
+    closure_batch.add_argument("--well", default=None, help="Optional well name filter.")
 
     return parser
 
@@ -815,6 +839,55 @@ def _run_window_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_closure_batch(args: argparse.Namespace) -> int:
+    result = run_closure_batch(
+        stage_params_path=args.stage_params,
+        well_root=args.well_root,
+        manifest_path=args.manifest,
+        observations_path=args.observations,
+        volume_column=args.volume_column,
+        rate_time_unit=args.rate_time_unit,
+        min_rate=args.min_rate,
+        g_time_m=args.g_time_m,
+        elapsed_duplicate_policy=args.elapsed_duplicate_policy,
+        closure_min_elapsed_seconds=args.closure_min_elapsed_seconds,
+        pressure_source=args.pressure_source,
+        perforation_friction_mpa=args.perforation_friction_mpa,
+        wellbore_storage_coeff_m3_per_mpa=args.wellbore_storage_coeff_m3_per_mpa,
+        method_preference=args.method_preference,
+        well=args.well,
+    )
+    paths = write_closure_batch_outputs(
+        result,
+        output_path=args.output,
+        correlation_output_path=args.correlation_output,
+    )
+    summary = result["summary"]
+    stage_count = result["stage_count"]
+    closure_computed = int(summary["closure_was_computed"].sum()) if "closure_was_computed" in summary.columns else 0
+    closure_found = 0
+    if "selected_closure_status" in summary.columns:
+        closure_found = int((summary["selected_closure_status"] == "ok").sum())
+
+    print(f"closure_batch_stage_count={stage_count}")
+    print(f"closure_batch_closure_computed_count={closure_computed}")
+    print(f"closure_batch_closure_found_count={closure_found}")
+    print(f"closure_batch_output_path={paths['output']}")
+    if "correlation_output" in paths:
+        print(f"closure_batch_correlation_output_path={paths['correlation_output']}")
+    if "selected_closure_method" in summary.columns:
+        method_counts = summary["selected_closure_method"].value_counts()
+        for method, count in method_counts.items():
+            print(f"closure_batch_method_{method}_count={count}")
+    if "pkn_volume_status" in summary.columns:
+        pkn_counts = summary["pkn_volume_status"].value_counts()
+        for status, count in pkn_counts.items():
+            print(f"closure_batch_pkn_{status}_count={count}")
+    print("closure_is_candidate=True")
+    print("closure_is_final_interpretation=False")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -840,6 +913,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "derivative-context":
         try:
             return _run_derivative_context(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "closure-batch":
+        try:
+            return _run_closure_batch(args)
         except ValueError as exc:
             parser.error(str(exc))
 
