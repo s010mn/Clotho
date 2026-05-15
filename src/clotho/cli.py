@@ -238,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     closure_batch.add_argument("--observations", default=None, type=Path, help="Optional observations CSV for correlation (stage + metric columns).")
     closure_batch.add_argument("--output", required=True, type=Path, help="Per-stage closure-volume summary CSV output path.")
     closure_batch.add_argument("--correlation-output", default=None, type=Path, help="Optional correlation summary CSV output path.")
+    closure_batch.add_argument("--cluster-output", default=None, type=Path, help="Optional per-cluster physical PKN audit CSV output path.")
     closure_batch.add_argument("--volume-column", default="total_volume", help="Cumulative volume column.")
     closure_batch.add_argument("--rate-time-unit", choices=["second", "minute"], default="minute", help="Rate time unit.")
     closure_batch.add_argument("--min-rate", default=10.0, type=float, help="Rate threshold for fracture initiation candidate.")
@@ -251,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     closure_batch.add_argument("--method-preference", choices=["barree", "mcclure", "barree-then-mcclure", "mcclure-then-barree"], default="barree-then-mcclure", help="Closure candidate method preference.")
     closure_batch.add_argument("--well", default=None, help="Optional well name filter.")
     closure_batch.add_argument("--stress-shadow-alpha", default=1.0, type=float, help="Stress shadow coupling alpha (0=no shadow).")
-    closure_batch.add_argument("--no-stress-shadow", action="store_true", help="Disable stress shadow (alpha=0).")
+    closure_batch.add_argument("--no-stress-shadow", "--no-stress-shadow-control", dest="no_stress_shadow", action="store_true", help="Disable stress shadow (alpha=0).")
     closure_batch.add_argument("--flow-allocation", choices=["stress-shadow", "uniform"], default="stress-shadow", help="Flow allocation method.")
     closure_batch.add_argument("--flow-allocation-exponent", default=1.0, type=float, help="Flow allocation exponent gamma (eta_i = xi_i^gamma / sum).")
 
@@ -868,6 +869,7 @@ def _run_closure_batch(args: argparse.Namespace) -> int:
         result,
         output_path=args.output,
         correlation_output_path=args.correlation_output,
+        cluster_output_path=args.cluster_output,
     )
     summary = result["summary"]
     stage_count = result["stage_count"]
@@ -882,6 +884,8 @@ def _run_closure_batch(args: argparse.Namespace) -> int:
     print(f"closure_batch_output_path={paths['output']}")
     if "correlation_output" in paths:
         print(f"closure_batch_correlation_output_path={paths['correlation_output']}")
+    if "cluster_output" in paths:
+        print(f"closure_batch_cluster_output_path={paths['cluster_output']}")
     if "selected_closure_method" in summary.columns:
         method_counts = summary["selected_closure_method"].value_counts()
         for method, count in method_counts.items():

@@ -860,6 +860,7 @@ def physical_pkn_volume_balance(
     all_V_total: list[float] = []
     all_L: list[np.ndarray] = []
     all_Pnet: list[np.ndarray] = []
+    cluster_audit_rows: list[dict[str, Any]] = []
 
     for idx in stable_indices:
         p_idx = float(pressure_mpa[idx])
@@ -868,21 +869,44 @@ def physical_pkn_volume_balance(
         if np.all(P_net_arr <= 0):
             continue
 
+        # per-cluster denominator unit_i (Phase 5D.4 direct formula):
+        # unit_i = K_lp * C_L_i * H_p * sqrt(tp) + 4 * C_L_i * H_p * sqrt(tp) * g
+        #          + (pi * I_F / E') * H_w^2 * P_net_i
+        # L_i = eta_i * V_inj / unit_i (no global Sum(unit_j * eta_j))
         unit = np.array([
             math.pi * I_F / E_prime_mpa * H_w_m ** 2 * P_net_arr[i]
             + C_arr[i] * H_p_m * math.sqrt(tp_seconds) * (k_lp_val + 4.0 * float(g_time[idx]))
             for i in range(n_clusters)
         ])
 
-        denom = float(np.sum(unit * eta))
-        if denom <= 0:
+        if np.all(unit <= 0):
             continue
 
-        L_arr = effective_injected_volume_m3 * eta / denom
+        with np.errstate(divide="ignore", invalid="ignore"):
+            L_arr = np.where(
+                unit > 0,
+                effective_injected_volume_m3 * eta / unit,
+                0.0,
+            )
         V_f_arr = np.array([
             physical_pkn_fracture_volume(float(L_arr[i]), H_w_m, float(P_net_arr[i]), E_prime_mpa, I_F=I_F)
             for i in range(n_clusters)
         ])
+
+        for ci in range(n_clusters):
+            cluster_audit_rows.append({
+                "stable_row_index": int(idx),
+                "cluster_index": int(ci),
+                "eta_i": float(eta[ci]),
+                "xi_i": float(xi[ci]),
+                "P_net_i_mpa": float(P_net_arr[ci]),
+                "C_L_i": float(C_arr[ci]),
+                "denominator_i_m3_per_m": float(unit[ci]),
+                "L_i_m": float(L_arr[ci]),
+                "V_f_i_m3": float(V_f_arr[ci]),
+                "g_time": float(g_time[idx]),
+                "elapsed_seconds": float(elapsed_seconds[idx]),
+            })
 
         all_V_total.append(float(np.sum(V_f_arr)))
         all_L.append(L_arr)
@@ -938,6 +962,7 @@ def physical_pkn_volume_balance(
     })
     result.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
     result.update(seg)
+    result["pkn_cluster_audit_rows"] = cluster_audit_rows
     return result
 
 
@@ -1140,6 +1165,7 @@ def _process_stage(
             wellbore_storage_coeff_m3_per_mpa=wellbore_storage_coeff_m3_per_mpa)
         row.update(vol_result)
         row.update(_empty_pkn_fields())
+        row["_pkn_cluster_audit_rows"] = []
         row["early_transient_risk"] = False
         row["closure_was_computed"] = False
         return row
@@ -1154,6 +1180,7 @@ def _process_stage(
             wellbore_storage_coeff_m3_per_mpa=wellbore_storage_coeff_m3_per_mpa)
         row.update(vol_result)
         row.update(_empty_pkn_fields())
+        row["_pkn_cluster_audit_rows"] = []
         row["early_transient_risk"] = False
         row["closure_was_computed"] = False
         return row
@@ -1167,6 +1194,7 @@ def _process_stage(
             wellbore_storage_coeff_m3_per_mpa=wellbore_storage_coeff_m3_per_mpa)
         row.update(vol_result)
         row.update(_empty_pkn_fields())
+        row["_pkn_cluster_audit_rows"] = []
         row["early_transient_risk"] = False
         row["closure_was_computed"] = False
         return row
@@ -1263,7 +1291,9 @@ def _process_stage(
         flow_allocation=flow_allocation,
         flow_allocation_exponent=flow_allocation_exponent,
     )
+    cluster_audit_rows = physical_pkn.pop("pkn_cluster_audit_rows", [])
     row.update(physical_pkn)
+    row["_pkn_cluster_audit_rows"] = cluster_audit_rows
 
     return row
 
@@ -1397,6 +1427,7 @@ def run_closure_batch(
         observations["stage"] = observations["stage"].astype(int)
 
     stage_rows: list[dict[str, Any]] = []
+    cluster_rows: list[dict[str, Any]] = []
     for _, mrow in manifest.iterrows():
         stage_num = int(mrow["stage"])
         msr = float(mrow["max_sustained_rate"])
@@ -1423,6 +1454,10 @@ def run_closure_batch(
             flow_allocation=flow_allocation,
             flow_allocation_exponent=flow_allocation_exponent,
         )
+
+        stage_cluster_rows = result.pop("_pkn_cluster_audit_rows", [])
+        for cr in stage_cluster_rows:
+            cluster_rows.append({"stage": stage_num, **cr})
 
         if observations is not None:
             obs_match = observations[observations["stage"] == stage_num]
@@ -1475,6 +1510,20 @@ def run_closure_batch(
     summary = pd.DataFrame(stage_rows)
     summary = summary.sort_values("stage", ignore_index=True)
 
+    if cluster_rows:
+        cluster_audit = pd.DataFrame(cluster_rows).sort_values(
+            ["stage", "stable_row_index", "cluster_index"], ignore_index=True,
+        )
+    else:
+        cluster_audit = pd.DataFrame(
+            columns=[
+                "stage", "stable_row_index", "cluster_index",
+                "eta_i", "xi_i", "P_net_i_mpa", "C_L_i",
+                "denominator_i_m3_per_m", "L_i_m", "V_f_i_m3",
+                "g_time", "elapsed_seconds",
+            ]
+        )
+
     correlation: pd.DataFrame | None = None
     if observations is not None and len(summary) > 0:
         correlation = build_observation_correlation_table(summary, observations)
@@ -1482,6 +1531,7 @@ def run_closure_batch(
     return {
         "summary": summary,
         "correlation": correlation,
+        "cluster_audit": cluster_audit,
         "stage_count": len(summary),
     }
 
@@ -1491,6 +1541,7 @@ def write_closure_batch_outputs(
     *,
     output_path: str | Path,
     correlation_output_path: str | Path | None = None,
+    cluster_output_path: str | Path | None = None,
 ) -> dict[str, Path]:
     """写出 closure-batch CSV 输出。parent directory 必须已存在。"""
     out = Path(output_path)
@@ -1509,5 +1560,14 @@ def write_closure_batch_outputs(
         if correlation is not None:
             correlation.to_csv(corr_out, index=False)
             paths["correlation_output"] = corr_out
+
+    if cluster_output_path is not None:
+        cluster_out = Path(cluster_output_path)
+        if not cluster_out.parent.exists():
+            raise ValueError(f"cluster output parent directory does not exist: {cluster_out.parent}")
+        cluster_audit: pd.DataFrame | None = result.get("cluster_audit")
+        if cluster_audit is not None:
+            cluster_audit.to_csv(cluster_out, index=False)
+            paths["cluster_output"] = cluster_out
 
     return paths

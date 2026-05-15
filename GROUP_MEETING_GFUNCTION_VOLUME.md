@@ -56,7 +56,9 @@ V_f,i^phys = (π I_F / E') · L_i · H_w² · P_net,i
 - stress shadow: `(I + αF)ξ = 1`，Sneddon kernel `F_ij = 1 - d/√(d²+(H_w/2)²)`；
 - C from stable P-vs-G dP/dG slope：`C = -(I_F · H_w² · ξ) / (E' · H_p · √tp) · dP/dG`；
 - K_lp = 4√π · m · Γ(m) / ((m+0.5) · Γ(m+0.5))；
-- volume balance per cluster per stable-segment row：`L_i = η_i · V_inj / Σ(unit_j · η_j)`。
+- 半缝长反演（Phase 5D.4 direct per-cluster）：`L_i = η_i · V_inj / unit_i`
+  其中 `unit_i = (π·I_F/E') · H_w² · P_net_i + C_L_i · H_p · √tp · (K_lp + 4·g)`；
+  η_i 只进入 numerator，**不再使用全局归一化分母 Σ(unit_j · η_j)**。
 
 关键说明：
 
@@ -85,9 +87,48 @@ Phase 5D.3 起，baseline 流量分配 η_i 不再 uniform，改为 stress-shado
 
 uniform η_i = 1/n 只作为 control，不再是 baseline。
 
-**重要发现**：stress-shadow-weighted η_i 改变了逐簇半缝长和体积分配，但由于 volume-balance 公式的代数结构（`Σ V_f_i = V_inj × Σ(η_i × unit_i) / Σ(η_j × unit_j) = V_inj`），stage-level total physical storage volume 对 η_i 分配不敏感。shadow_eta 和 uniform_eta 的 stage total volume 完全相同。因此 stage-level 相关性不受 flow allocation 方法影响。
+### 4.3 Phase 5D.4：direct per-cluster denominator（公式修正）
 
-后续若要让 flow allocation 改变 stage total volume，需要更完整的 coupled model（如簇级流量不平衡导致不同簇的泄滤面积/时间不同）。
+Phase 5D.3 实现使用了全局归一化分母 `L_i = η_i V_inj / Σ_j(unit_j · η_j)`，
+这与人类截图的半长反演式不一致。Phase 5D.4 已修正为 per-cluster denominator：
+
+```
+L_i = η_i · V_inj / unit_i
+unit_i = (π · I_F / E') · H_w² · P_net_i
+       + C_L_i · H_p · √tp · (K_lp + 4 · g)
+```
+
+- 每个 cluster 用自己的 unit_i 作为分母；
+- η_i 只出现在 numerator；
+- 不再有 sum(unit_j × eta_j) 作为 L_i 的分母。
+
+**Phase 5D.3 描述里的 `L_i = η_i · V_inj / Σ(unit_j · η_j)` 是错误口径，已在 Phase 5D.4 删除。**
+
+### 4.4 修正后 stage total V_f 仍然对 η_i / ξ_i 不敏感
+
+Phase 5D.4 reference smoke：
+
+- cluster-level audit 显示 `denominator_i_m3_per_m` 确实 per-cluster（随 ξ_i 变化）；
+- L_i = η_i · V_inj / unit_i 在 cluster 之间不同（特别是 uniform_eta 配置下，L_i ∝ 1/ξ_i）；
+- 但 **stage-level total V_f = Σ_i V_f_i 在 shadow_eta / uniform_eta / no_shadow 之间仍然完全相同**（max abs diff ~ 1e-13，纯浮点噪声）。
+
+**这不是 global denominator 残留，而是当前 coupled assumption 的代数耦合：**
+
+- 当前 `P_net_i = ξ_i · (P - σ_min - perf)`，即 P_net_i ∝ ξ_i；
+- 当前 `C_L_i = -(I_F · H_w² · ξ_i) / (E' · H_p · √tp) · dP/dG`，即 C_L_i ∝ ξ_i；
+- 所以 `unit_i = ξ_i · U_base`，U_base 与 cluster 无关；
+- shadow_eta：`L_i = (ξ_i/Σξ) · V_inj / (ξ_i · U_base) = V_inj / (Σξ · U_base)`，cluster 间相等；
+- uniform_eta：`L_i = (1/n) · V_inj / (ξ_i · U_base)`，cluster 间随 1/ξ_i 变化；
+- `V_f_i = K · L_i · P_net_i = K · L_i · ξ_i · P_base`；
+- shadow_eta：V_f_i ∝ ξ_i；uniform_eta：V_f_i ∝ 1；
+- 两种情况下 `Σ V_f_i = K · P_base · V_inj / U_base`，与 ξ_i / η_i 都无关。
+
+**结论**：
+
+- Phase 5D.4 per-cluster denominator 公式实现是正确的（与人类截图一致）；
+- 当前 *coupled assumption*（C_L ∝ ξ, P_net ∝ ξ）在代数上把 ξ 从 stage total V_f 中消去；
+- 这是 *physical assumption* 层面的耦合，不是公式实现错误；
+- 后续要让 stress shadow 真正改变 stage total V_f，必须 decouple C_L 与 ξ（如把 C_L 取为 stage-level 标量、或独立的 segment slope）。
 
 闭合候选覆盖：
 
@@ -149,20 +190,21 @@ uniform η_i = 1/n 只作为 control，不再是 baseline。
 
 ## 7. stress shadow 解释
 
-stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0 no-shadow control）。
+stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0 no-shadow control + uniform η control）。
 
-- stage-level total physical storage volume 在 baseline（α=1）与 no-shadow control（α=0）中完全相同；
-- 这是因为当前 linear volume-balance formulation 中，stress shadow 主要改变簇间半长分配（α=1 时边缘簇更长、中心簇更短），但由于按总注入体积归一化求解，stage-level total physical storage volume 不变；
+- stage-level total physical storage volume 在 baseline（α=1, shadow_eta）、uniform_eta 与 no-shadow（α=0）三种 control 中完全相同（max abs diff ~ 1e-13，纯浮点噪声）；
+- Phase 5D.3 中归因为 "global denominator 抵消" 的现象，Phase 5D.4 修正公式后仍然存在，但根因不是 global denominator，而是 *coupled assumption* `P_net_i ∝ ξ_i` 与 `C_L_i ∝ ξ_i` 在代数上把 ξ 从 stage total V_f 中消去（详见 4.4）；
 - 因此本轮 stage-level 相关性不受 shadow control 影响；
-- 后续若要让 stress shadow 改变 stage total volume，需要重新定义体积约束或簇间流量分配模型。
+- 后续若要让 stress shadow 改变 stage total volume，需要解耦 C_L 与 ξ，或重新定义簇级 leakoff 模型。
 
 ## 8. I_F 说明
 
 - I_F = 0.722464726919，人类指定常数；
-- I_F 在 volume-balance 代数中消去：V_f = π/E' × V_inj × ratio_i / Σ(K_j × ratio_j) × H_w² × P_net_i，其中 K_j 不含 I_F；
-- I_F 影响中间量：半缝长 L ∝ 1/I_F，泄滤系数 C ∝ I_F；
-- 最终 V_f 对 I_F 不敏感；
-- 积分表达式确认仍在 TODO。
+- 在 Phase 5D.4 的 direct per-cluster 公式中：`L_i = η_i · V_inj / unit_i`，其中 unit_i 含 `π·I_F/E'` 与 `C_L_i` 两项，C_L_i 又包含 I_F；
+- V_f_i = (π·I_F/E') · L_i · H_w² · P_net_i；
+- I_F 出现在 V_f_i 的乘子（π·I_F/E'）和 unit_i 的两项中，部分相互抵消；
+- 实际 reference smoke 数值表明 stage total V_f 对 I_F 的敏感度较低（中间量 L 和 C 受 I_F 影响明显）；
+- 积分表达式确认仍在 TODO（见 TODO.md 第 19 条）。
 
 ## 9. 组会建议讲法
 
@@ -192,4 +234,4 @@ stress shadow linear system `(I + αF)ξ = 1` 已运行（α=1.0 baseline + α=0
 
 ## 11. Figures
 
-Figures generated outside repo under `/tmp/gfunction-ref-audit-phase5d2/figures/`
+Figures generated outside repo under `/tmp/gfunction-ref-audit-phase5d4/figures/` (Phase 5D.4 direct per-cluster denominator).

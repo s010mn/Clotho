@@ -2954,3 +2954,59 @@ eta range (shadow, alpha=1): min=0.069-0.113, max=0.249-0.269
 - closure outputs remain candidates, not final interpretation；
 - 不提交 PNG / CSV / 真实数据；
 - 不 push master。
+
+## Phase 5D.4 — direct per-cluster PKN length denominator
+
+Branch: `sprint`
+
+核心变更：
+
+- 修正 `physical_pkn_volume_balance` 中的半长公式；
+- 旧公式（Phase 5D.3 及之前）：`L_i = eta_i * V_inj / Σ_j(unit_j * eta_j)`，使用全局归一化分母；
+- 新公式（Phase 5D.4）：`L_i = eta_i * V_inj / unit_i`，per-cluster denominator；
+- `unit_i = (π·I_F/E') · H_w² · P_net_i + C_L_i · H_p · √tp · (K_lp + 4·g)`；
+- η_i 只进入 numerator，不再放到分母聚合项里抵消；
+- 输出新增 cluster-level audit（`--cluster-output` CLI flag）：
+  - 每行 (stage, stable_row_index, cluster_index)
+  - 列 eta_i, xi_i, P_net_i_mpa, C_L_i, denominator_i_m3_per_m, L_i_m, V_f_i_m3, g_time, elapsed_seconds；
+- 新增 5 tests（TestPerClusterDenominator）：
+  - per-cluster denominator formula 直接验证；
+  - no-global-denominator collapse 检测；
+  - eta 改变 stage total V_f（合成 unit_i 不与 eta 共线时）；
+  - shadow_eta vs uniform_eta L_i 差异（合成 unit_i 时）；
+  - cluster audit V_f_i 求和后均值 == summary pkn_fracture_volume_m3；
+- 163 tests pass（158 + 5 new）。
+
+关键发现（须 honest 记录）：
+
+- per-cluster denominator IS correct（cluster audit 显示 denominator_i 随 cluster 不同）；
+- 但 stage-level total V_f 在 shadow_eta / uniform_eta / no_shadow 之间仍然完全相同（max abs diff ~ 1e-13，纯浮点噪声）；
+- 原因：当前实现里 P_net_i = ξ_i · P_base 且 C_L_i ∝ ξ_i 同时成立，导致 `unit_i ∝ ξ_i`；
+- 此时 V_f_i = K · P_base · eta_i · V_inj / U_base（K 是常数），Σ V_f_i = K · P_base · V_inj / U_base 与 ξ 和 η 都无关；
+- 这是 *coupled stress-shadow assumption* 的代数结构问题，不是 global denominator 残留；
+- 公式修正本身是 Phase 5D.3 → 5D.4 的正确改动（per-cluster denominator）；
+- 但要让 stress shadow 改变 stage total volume，需要解耦 C_L_i 和 ξ_i（如把 C_L 取为 stage-level 标量，或独立于 ξ 的 segment slope）；
+- Phase 5D.3 中 `shadow_eta / uniform_eta 完全相同` 的口径在 5D.4 中保持成立，但解释从 "global denominator 抵消" 改为 "C_L ∝ ξ 的 coupled 假设导致 unit_i ∝ ξ_i"。
+
+Reference smoke（well4, 30 stages, Phase 4K manifest, 3 configs）：
+
+```text
+shadow_eta (baseline): pkn_ok=28, micro Pearson=-0.259, EM Pearson=0.075
+uniform_eta (control): pkn_ok=28, micro Pearson=-0.259, EM Pearson=0.075
+no_shadow (control):  pkn_ok=28, micro Pearson=-0.259, EM Pearson=0.075
+stage total volumes:  identical across all configs (max abs diff ~ 1e-13)
+cluster denominator_i: per-cluster, varies with xi_i (e.g. stage 1 row 15: [5.67, 1.68, 1.97, 2.00, 2.00, 1.97, ...])
+cluster L_i (shadow):  constant within stable row (V/(Σxi·U_base))
+cluster L_i (uniform): varies with 1/xi
+summary-cluster max abs diff: ~ 1e-13 (perfect agreement)
+```
+
+边界（5D.4）：
+
+- canonical L_i 公式不再含 Σ_j(unit_j · eta_j)；legacy MVP 体积分支不受影响；
+- per-cluster cluster_audit 输出可选（默认不写）；
+- prior 1f00c47 (Phase 5D.3) 的相关性数值仍然成立，但 *解释* 必须更新：是 C∝ξ 耦合造成 stage total 不变，不是 global denominator 残留；
+- closure outputs remain candidates, not final interpretation；
+- 不提交 PNG / CSV / 真实数据；
+- 不 push master；
+- 下一步若要让 stress shadow 真正影响 stage total，需要 decouple C_L 与 ξ（或 reformulate coupled cluster flow imbalance model）。
