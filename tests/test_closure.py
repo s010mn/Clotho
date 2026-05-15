@@ -13,6 +13,7 @@ from clotho.closure import (
     K_lp,
     PHYSICAL_PKN_IF,
     build_observation_correlation_table,
+    compute_flow_allocation_eta,
     compute_physical_leakoff_C,
     compute_stress_shadow,
     effective_volume_correction,
@@ -989,3 +990,107 @@ class TestPhysicalPKN:
         assert row["selected_closure_status"] == "ok"
         assert row["closure_is_candidate"] == True  # noqa: E712
         assert row["closure_is_final_interpretation"] == False  # noqa: E712
+
+
+class TestFlowAllocationEta:
+    def test_stress_shadow_eta_proportional_to_xi(self):
+        xi = np.array([0.2, 0.5, 1.0])
+        eta = compute_flow_allocation_eta(xi, exponent=1.0)
+        expected = xi / xi.sum()
+        np.testing.assert_allclose(eta, expected, rtol=1e-12)
+        assert eta[0] < eta[1] < eta[2]
+        assert eta.sum() == pytest.approx(1.0, rel=1e-12)
+
+    def test_exponent_zero_gives_uniform(self):
+        xi = np.array([0.2, 0.5, 1.0])
+        eta = compute_flow_allocation_eta(xi, exponent=0.0)
+        expected = np.array([1.0 / 3, 1.0 / 3, 1.0 / 3])
+        np.testing.assert_allclose(eta, expected, rtol=1e-12)
+
+    def test_stronger_shadow_gets_less_allocation(self):
+        xi = np.array([0.05, 0.3, 0.8, 0.9])
+        eta = compute_flow_allocation_eta(xi, exponent=1.0)
+        assert np.argmin(eta) == 0
+        assert np.argmax(eta) == 3
+
+    def test_invalid_xi_raises(self):
+        with pytest.raises(ValueError):
+            compute_flow_allocation_eta(np.array([0.5, -0.1, 0.3]))
+        with pytest.raises(ValueError):
+            compute_flow_allocation_eta(np.array([0.5, np.nan, 0.3]))
+
+    def test_invalid_exponent_raises(self):
+        with pytest.raises(ValueError):
+            compute_flow_allocation_eta(np.array([0.5, 0.3]), exponent=-1.0)
+
+    def test_stress_shadow_allocation_changes_per_cluster_lengths(self):
+        n = 50
+        tp = 600.0
+        elapsed = np.arange(1, n + 1, dtype=float)
+        delta = elapsed / tp
+        g_time = np.asarray(nolte_g_time(delta, 0.8), dtype=float)
+        pressure = 120.0 - 3.0 * g_time
+        E_prime = 33.3 * 1000.0 / (1.0 - 0.23 ** 2)
+
+        common = dict(
+            n_clusters=3,
+            cluster_spacings_m=10.0,
+            H_w_m=50.0,
+            fleak=0.5,
+            E_prime_mpa=E_prime,
+            closure_pressure_mpa=110.0,
+            minimum_stress_prior_mpa=99.1,
+            perforation_friction_mpa=0.0,
+            g_time=g_time,
+            pressure_mpa=pressure,
+            elapsed_seconds=elapsed,
+            closure_index=40,
+            tp_seconds=tp,
+            g_function_m=0.8,
+            effective_injected_volume_m3=3000.0,
+            alpha=1.0,
+        )
+        shadow_result = physical_pkn_volume_balance(**common, flow_allocation="stress-shadow")
+        uniform_result = physical_pkn_volume_balance(**common, flow_allocation="uniform")
+
+        assert shadow_result["pkn_volume_status"] == "ok"
+        assert uniform_result["pkn_volume_status"] == "ok"
+        assert shadow_result["pkn_flow_allocation_method"] == "stress-shadow"
+        assert uniform_result["pkn_flow_allocation_method"] == "uniform"
+        assert shadow_result["pkn_eta_std"] > uniform_result["pkn_eta_std"]
+        assert uniform_result["pkn_eta_std"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_physical_pkn_eta_in_output_fields(self):
+        n = 50
+        tp = 600.0
+        elapsed = np.arange(1, n + 1, dtype=float)
+        delta = elapsed / tp
+        g_time = np.asarray(nolte_g_time(delta, 0.8), dtype=float)
+        pressure = 120.0 - 3.0 * g_time
+        E_prime = 33.3 * 1000.0 / (1.0 - 0.23 ** 2)
+
+        result = physical_pkn_volume_balance(
+            n_clusters=4,
+            cluster_spacings_m=8.4,
+            H_w_m=50.0,
+            fleak=0.5,
+            E_prime_mpa=E_prime,
+            closure_pressure_mpa=110.0,
+            minimum_stress_prior_mpa=99.1,
+            g_time=g_time,
+            pressure_mpa=pressure,
+            elapsed_seconds=elapsed,
+            closure_index=40,
+            tp_seconds=tp,
+            g_function_m=0.8,
+            effective_injected_volume_m3=3000.0,
+            alpha=1.0,
+            flow_allocation="stress-shadow",
+            flow_allocation_exponent=1.0,
+        )
+        assert result["pkn_volume_status"] == "ok"
+        assert result["pkn_flow_allocation_method"] == "stress-shadow"
+        assert result["pkn_flow_allocation_exponent"] == 1.0
+        assert np.isfinite(result["pkn_eta_min"])
+        assert np.isfinite(result["pkn_eta_max"])
+        assert result["pkn_eta_min"] < result["pkn_eta_max"]

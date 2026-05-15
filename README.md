@@ -41,7 +41,7 @@ stage 参数表
   - McClure-style compliance closure candidate；
   - 有效进缝液量修正（井筒存储 + 射孔摩阻）；
   - physical PKN storage volume（V_f = π I_F/E' · L · H_w² · P_net）；
-  - stress shadow linear system（(I+αF)ξ=1）+ cluster allocation；
+  - stress shadow linear system（(I+αF)ξ=1）+ stress-shadow-weighted flow allocation（η_i = ξ_i/Σξ_i）；
   - stable P-vs-G segment detection + leakoff coefficient C；
   - legacy MVP PKN 结果保留为 `legacy_mvp_pkn_*` 字段；
   - 观测相关性对照（微地震/电磁）；

@@ -1,6 +1,6 @@
 # G函数闭合候选 physical PKN 体积与微地震/广域电磁对照
 
-本文件是 sprint 分支 Phase 5D.2 的组会汇报材料。
+本文件是 sprint 分支 Phase 5D.3 的组会汇报材料。
 所有闭合结果都是 **candidate**，不是最终论文级闭合压力解释。
 
 ## 1. 研究问题
@@ -56,7 +56,7 @@ V_f,i^phys = (π I_F / E') · L_i · H_w² · P_net,i
 - stress shadow: `(I + αF)ξ = 1`，Sneddon kernel `F_ij = 1 - d/√(d²+(H_w/2)²)`；
 - C from stable P-vs-G dP/dG slope：`C = -(I_F · H_w² · ξ) / (E' · H_p · √tp) · dP/dG`；
 - K_lp = 4√π · m · Γ(m) / ((m+0.5) · Γ(m+0.5))；
-- volume balance per cluster per stable-segment row：`L_i = V_inj · ratio_i / Σ(unit_j · ratio_j)`。
+- volume balance per cluster per stable-segment row：`L_i = η_i · V_inj / Σ(unit_j · η_j)`。
 
 关键说明：
 
@@ -64,6 +64,30 @@ V_f,i^phys = (π I_F / E') · L_i · H_w² · P_net,i
 - legacy MVP 已降级为 `legacy_mvp_pkn_*` 字段；
 - I_F = 0.722464726919 目前按人类指定常数固定；积分表达式确认仍在 TODO；
 - I_F 在 volume-balance 中代数消去（同时出现在裂缝存储项和泄滤系数 C 中），因此最终 V_f 值与 I_F 无关，但 I_F 影响计算中间量（半缝长 L 和泄滤系数 C）。
+
+### 4.2 Coupled stress-shadow assumption（Phase 5D.3）
+
+Phase 5D.3 起，baseline 流量分配 η_i 不再 uniform，改为 stress-shadow-weighted：
+
+```
+η_i = ξ_i^γ / Σ_j(ξ_j^γ)
+```
+
+默认 γ=1，即 `η_i = ξ_i / Σξ_i`。
+
+含义：应力阴影越强的簇（ξ_i 越小），分配到的流量比例越小。
+
+当前 coupled stress-shadow assumption：
+
+- ξ_i 影响 P_net_i = ξ_i × (P - perf - σ_min)；
+- ξ_i 影响 C_L_i（泄滤系数）；
+- ξ_i 影响 η_i（流量分配）。
+
+uniform η_i = 1/n 只作为 control，不再是 baseline。
+
+**重要发现**：stress-shadow-weighted η_i 改变了逐簇半缝长和体积分配，但由于 volume-balance 公式的代数结构（`Σ V_f_i = V_inj × Σ(η_i × unit_i) / Σ(η_j × unit_j) = V_inj`），stage-level total physical storage volume 对 η_i 分配不敏感。shadow_eta 和 uniform_eta 的 stage total volume 完全相同。因此 stage-level 相关性不受 flow allocation 方法影响。
+
+后续若要让 flow allocation 改变 stage total volume，需要更完整的 coupled model（如簇级流量不平衡导致不同簇的泄滤面积/时间不同）。
 
 闭合候选覆盖：
 

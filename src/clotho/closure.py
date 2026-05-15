@@ -693,6 +693,20 @@ def K_lp(m: float) -> float:
     )
 
 
+def compute_flow_allocation_eta(
+    xi: np.ndarray,
+    *,
+    exponent: float = 1.0,
+) -> np.ndarray:
+    """eta_i = xi_i^gamma / sum(xi_j^gamma). exponent=0 gives uniform."""
+    if not np.all(np.isfinite(xi)) or np.any(xi <= 0):
+        raise ValueError("xi must be finite and positive for flow allocation")
+    if not np.isfinite(exponent) or exponent < 0:
+        raise ValueError(f"flow_allocation_exponent must be finite and >= 0, got {exponent}")
+    weights = xi ** exponent
+    return weights / weights.sum()
+
+
 def physical_pkn_volume_balance(
     *,
     n_clusters: int,
@@ -715,6 +729,8 @@ def physical_pkn_volume_balance(
     stable_min_elapsed_seconds: float = 15.0,
     stable_min_points: int = 8,
     stable_min_r2: float = 0.8,
+    flow_allocation: str = "stress-shadow",
+    flow_allocation_exponent: float = 1.0,
 ) -> dict[str, Any]:
     """Physical PKN storage volume balance with stress shadow and stable-segment C."""
 
@@ -771,6 +787,12 @@ def physical_pkn_volume_balance(
             "stable_segment_start_elapsed_seconds": np.nan,
             "stable_segment_end_elapsed_seconds": np.nan,
             "stable_segment_point_count": 0,
+            "pkn_flow_allocation_method": flow_allocation,
+            "pkn_flow_allocation_exponent": float(flow_allocation_exponent),
+            "pkn_eta_min": np.nan,
+            "pkn_eta_max": np.nan,
+            "pkn_eta_mean": np.nan,
+            "pkn_eta_std": np.nan,
         })
         return out
 
@@ -822,8 +844,11 @@ def physical_pkn_volume_balance(
         return out
 
     k_lp_val = K_lp(g_function_m)
-    xi_sum = float(np.sum(xi))
-    ratio = xi / xi_sum if xi_sum > 0 else np.ones(n_clusters) / n_clusters
+
+    if flow_allocation == "uniform":
+        eta = np.ones(n_clusters) / n_clusters
+    else:
+        eta = compute_flow_allocation_eta(xi, exponent=flow_allocation_exponent)
 
     sigma = float(minimum_stress_prior_mpa) if minimum_stress_prior_mpa is not None and np.isfinite(minimum_stress_prior_mpa) else 0.0
     perf = float(perforation_friction_mpa)
@@ -849,11 +874,11 @@ def physical_pkn_volume_balance(
             for i in range(n_clusters)
         ])
 
-        denom = float(np.sum(unit * ratio))
+        denom = float(np.sum(unit * eta))
         if denom <= 0:
             continue
 
-        L_arr = effective_injected_volume_m3 * ratio / denom
+        L_arr = effective_injected_volume_m3 * eta / denom
         V_f_arr = np.array([
             physical_pkn_fracture_volume(float(L_arr[i]), H_w_m, float(P_net_arr[i]), E_prime_mpa, I_F=I_F)
             for i in range(n_clusters)
@@ -904,6 +929,12 @@ def physical_pkn_volume_balance(
         "pkn_H_p_m": float(H_p_m),
         "pkn_fleak": float(fleak_val),
         "pkn_warning": fleak_warning,
+        "pkn_flow_allocation_method": flow_allocation,
+        "pkn_flow_allocation_exponent": float(flow_allocation_exponent),
+        "pkn_eta_min": float(np.min(eta)),
+        "pkn_eta_max": float(np.max(eta)),
+        "pkn_eta_mean": float(np.mean(eta)),
+        "pkn_eta_std": float(np.std(eta)) if n_clusters > 1 else 0.0,
     })
     result.update({k: v for k, v in shadow.items() if k != "stress_shadow_xi"})
     result.update(seg)
@@ -1052,6 +1083,8 @@ def _process_stage(
     wellbore_storage_coeff_m3_per_mpa: float,
     method_preference: str,
     stress_shadow_alpha: float = 1.0,
+    flow_allocation: str = "stress-shadow",
+    flow_allocation_exponent: float = 1.0,
 ) -> dict[str, Any]:
     """处理单个 stage 的闭合候选分析。"""
     row: dict[str, Any] = {"stage": stage_info.stage}
@@ -1227,6 +1260,8 @@ def _process_stage(
         g_function_m=stage_info.g_function_m if stage_info.g_function_m is not None else g_time_m,
         effective_injected_volume_m3=vol_result["effective_injected_volume_m3"],
         alpha=stress_shadow_alpha,
+        flow_allocation=flow_allocation,
+        flow_allocation_exponent=flow_allocation_exponent,
     )
     row.update(physical_pkn)
 
@@ -1309,6 +1344,12 @@ def _empty_pkn_fields() -> dict[str, Any]:
         "stable_segment_start_elapsed_seconds": np.nan,
         "stable_segment_end_elapsed_seconds": np.nan,
         "stable_segment_point_count": 0,
+        "pkn_flow_allocation_method": "",
+        "pkn_flow_allocation_exponent": np.nan,
+        "pkn_eta_min": np.nan,
+        "pkn_eta_max": np.nan,
+        "pkn_eta_mean": np.nan,
+        "pkn_eta_std": np.nan,
         "legacy_mvp_pkn_fracture_volume_m3": np.nan,
         "legacy_mvp_pkn_half_length_mean_m": np.nan,
         "legacy_mvp_pkn_volume_status": "not_computed",
@@ -1332,6 +1373,8 @@ def run_closure_batch(
     wellbore_storage_coeff_m3_per_mpa: float = 0.0,
     method_preference: str = "barree-then-mcclure",
     stress_shadow_alpha: float = 1.0,
+    flow_allocation: str = "stress-shadow",
+    flow_allocation_exponent: float = 1.0,
     well: str | None = None,
 ) -> dict[str, Any]:
     """运行 closure-batch 批量闭合候选分析。
@@ -1377,6 +1420,8 @@ def run_closure_batch(
             wellbore_storage_coeff_m3_per_mpa=wellbore_storage_coeff_m3_per_mpa,
             method_preference=method_preference,
             stress_shadow_alpha=stress_shadow_alpha,
+            flow_allocation=flow_allocation,
+            flow_allocation_exponent=flow_allocation_exponent,
         )
 
         if observations is not None:

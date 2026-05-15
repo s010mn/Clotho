@@ -252,6 +252,8 @@ def build_parser() -> argparse.ArgumentParser:
     closure_batch.add_argument("--well", default=None, help="Optional well name filter.")
     closure_batch.add_argument("--stress-shadow-alpha", default=1.0, type=float, help="Stress shadow coupling alpha (0=no shadow).")
     closure_batch.add_argument("--no-stress-shadow", action="store_true", help="Disable stress shadow (alpha=0).")
+    closure_batch.add_argument("--flow-allocation", choices=["stress-shadow", "uniform"], default="stress-shadow", help="Flow allocation method.")
+    closure_batch.add_argument("--flow-allocation-exponent", default=1.0, type=float, help="Flow allocation exponent gamma (eta_i = xi_i^gamma / sum).")
 
     return parser
 
@@ -858,6 +860,8 @@ def _run_closure_batch(args: argparse.Namespace) -> int:
         wellbore_storage_coeff_m3_per_mpa=args.wellbore_storage_coeff_m3_per_mpa,
         method_preference=args.method_preference,
         stress_shadow_alpha=0.0 if args.no_stress_shadow else args.stress_shadow_alpha,
+        flow_allocation=args.flow_allocation,
+        flow_allocation_exponent=args.flow_allocation_exponent,
         well=args.well,
     )
     paths = write_closure_batch_outputs(
