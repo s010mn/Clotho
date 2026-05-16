@@ -75,6 +75,18 @@ def compute_g_function_closure_efficiency(selected_closure_g_time: float | None)
     return result
 
 
+def g_time_for_fluid_efficiency(eta: float) -> float:
+    """由 diagnostic fluid efficiency 反推目标 Gc。
+
+    eta = Gc / (Gc + 2) 反解为 Gc = 2*eta/(1-eta)。
+    该函数只用于 sensitivity prior，不表示 closure truth。
+    """
+    eta_value = float(eta)
+    if not np.isfinite(eta_value) or eta_value <= 0.0 or eta_value >= 1.0:
+        raise ValueError("eta must be finite and in (0, 1)")
+    return float(2.0 * eta_value / (1.0 - eta_value))
+
+
 def reconcile_fluid_efficiencies(
     pkn_shutin_fluid_efficiency: float | None,
     g_function_closure_efficiency: float | None,
@@ -342,6 +354,600 @@ def build_tp_sensitivity_efficiency(
                 ),
             })
     return pd.DataFrame.from_records(rows)
+
+
+def select_target_g_time_row(
+    *,
+    g_time: np.ndarray,
+    elapsed_seconds: np.ndarray,
+    pressure_mpa: np.ndarray,
+    target_g_time: float,
+) -> dict[str, Any]:
+    """在有效 falloff window 中选择最接近 target Gc 的行。
+
+    若距离相同，`np.argmin` 会选择更早出现的行，使规则稳定可测试。
+    """
+    g = np.asarray(g_time, dtype=float)
+    elapsed = np.asarray(elapsed_seconds, dtype=float)
+    pressure = np.asarray(pressure_mpa, dtype=float)
+    result: dict[str, Any] = {
+        "target_status": "target_not_computed",
+        "target_row_index": np.nan,
+        "target_elapsed_seconds": np.nan,
+        "target_nolte_g_time": np.nan,
+        "target_pressure_mpa": np.nan,
+        "max_available_Gc": np.nan,
+        "target_inside_valid_window": False,
+    }
+    try:
+        target = float(target_g_time)
+    except (TypeError, ValueError):
+        result["target_status"] = "target_Gc_invalid"
+        return result
+    finite_g = g[np.isfinite(g)]
+    if len(finite_g) == 0 or not np.isfinite(target):
+        result["target_status"] = "target_Gc_invalid"
+        return result
+    max_g = float(np.max(finite_g))
+    result["max_available_Gc"] = max_g
+    if target > max_g:
+        result["target_status"] = "target_Gc_beyond_valid_window"
+        return result
+
+    valid_position = np.isfinite(g) & np.isfinite(elapsed)
+    if not valid_position.any():
+        result["target_status"] = "target_pressure_missing"
+        return result
+    valid_idx = np.where(valid_position)[0]
+    nearest_pos = int(np.argmin(np.abs(g[valid_idx] - target)))
+    idx = int(valid_idx[nearest_pos])
+    result.update({
+        "target_row_index": idx,
+        "target_elapsed_seconds": float(elapsed[idx]),
+        "target_nolte_g_time": float(g[idx]),
+    })
+    if not np.isfinite(pressure[idx]):
+        result["target_status"] = "target_pressure_missing"
+        result["target_pressure_mpa"] = np.nan
+        return result
+    result.update({
+        "target_status": "ok",
+        "target_pressure_mpa": float(pressure[idx]),
+        "target_inside_valid_window": True,
+    })
+    return result
+
+
+EFFICIENCY_PRIOR_METRICS = (
+    "pkn_fracture_volume_m3",
+    "pkn_leakoff_volume_m3",
+    "pkn_nonstorage_volume_m3",
+    "pkn_shutin_fluid_efficiency",
+    "target_pressure_mpa",
+    "target_elapsed_seconds",
+)
+
+EFFICIENCY_PRIOR_TARGETS = (
+    "microseismic_affected_volume",
+    "electromagnetic_affected_area",
+)
+
+
+def _pearson_spearman_series(metric_values: pd.Series, target_values: pd.Series) -> tuple[float, float, int]:
+    pair = pd.DataFrame({
+        "metric": pd.to_numeric(metric_values, errors="coerce"),
+        "target": pd.to_numeric(target_values, errors="coerce"),
+    }).dropna()
+    n = int(len(pair))
+    if n < 3:
+        return np.nan, np.nan, n
+    pearson = float(pair["metric"].corr(pair["target"], method="pearson"))
+    spearman = float(pair["metric"].rank().corr(pair["target"].rank()))
+    return pearson, spearman, n
+
+
+def build_target_Gc_availability(stage_table: pd.DataFrame) -> pd.DataFrame:
+    """汇总每个 target eta/Gc 是否在有效窗口内可达。"""
+    if stage_table.empty:
+        return pd.DataFrame(columns=[
+            "target_eta",
+            "target_Gc",
+            "ok_stage_count",
+            "beyond_valid_window_count",
+            "missing_stage_count",
+            "median_target_elapsed_seconds",
+            "median_target_minus_selected_elapsed_seconds",
+            "median_target_pressure_mpa",
+            "median_selected_closure_g_time",
+            "median_target_Gc",
+            "median_max_available_Gc",
+        ])
+    rows: list[dict[str, Any]] = []
+    grouped = stage_table.groupby("target_fluid_efficiency", dropna=False)
+    for eta, grp in grouped:
+        status = grp["target_status"].astype(str)
+        rows.append({
+            "target_eta": eta,
+            "target_Gc": float(pd.to_numeric(grp["target_Gc"], errors="coerce").median()),
+            "ok_stage_count": int((status == "ok").sum()),
+            "beyond_valid_window_count": int((status == "target_Gc_beyond_valid_window").sum()),
+            "missing_stage_count": int((status != "ok").sum() - (status == "target_Gc_beyond_valid_window").sum()),
+            "median_target_elapsed_seconds": float(pd.to_numeric(
+                grp["target_elapsed_seconds"], errors="coerce"
+            ).median()),
+            "median_target_minus_selected_elapsed_seconds": float(pd.to_numeric(
+                grp["target_minus_selected_elapsed_seconds"], errors="coerce"
+            ).median()),
+            "median_target_pressure_mpa": float(pd.to_numeric(
+                grp["target_pressure_mpa"], errors="coerce"
+            ).median()),
+            "median_selected_closure_g_time": float(pd.to_numeric(
+                grp["selected_closure_g_time"], errors="coerce"
+            ).median()),
+            "median_target_Gc": float(pd.to_numeric(grp["target_Gc"], errors="coerce").median()),
+            "median_max_available_Gc": float(pd.to_numeric(
+                grp["max_available_Gc"], errors="coerce"
+            ).median()),
+        })
+    return pd.DataFrame.from_records(rows)
+
+
+def build_efficiency_prior_correlation_table(
+    stage_table: pd.DataFrame,
+    selected_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    """构建 selected baseline 和 efficiency-prior target rows 的相关性表。"""
+    rows: list[dict[str, Any]] = []
+
+    if not selected_summary.empty:
+        selected = selected_summary.copy()
+        selected["target_fluid_efficiency"] = "selected"
+        selected["target_Gc"] = "selected"
+        selected["target_status"] = np.where(
+            selected.get("selected_closure_status", "") == "ok", "ok", "missing_selected_closure"
+        )
+        selected["target_pressure_mpa"] = selected.get("selected_closure_pressure_mpa", np.nan)
+        selected["target_elapsed_seconds"] = selected.get("selected_closure_elapsed_seconds", np.nan)
+        groups: list[tuple[Any, pd.DataFrame]] = [("selected", selected)]
+    else:
+        groups = []
+
+    for eta, grp in stage_table.groupby("target_fluid_efficiency", dropna=False):
+        groups.append((eta, grp))
+
+    for eta, grp in groups:
+        target_g = "selected"
+        if eta != "selected" and "target_Gc" in grp.columns:
+            numeric_g = pd.to_numeric(grp["target_Gc"], errors="coerce")
+            target_g = float(numeric_g.median()) if numeric_g.notna().any() else np.nan
+        status = grp.get("target_status", pd.Series([""] * len(grp))).astype(str)
+        ok_count = int((status == "ok").sum())
+        beyond_count = int((status == "target_Gc_beyond_valid_window").sum())
+        missing_count = int(len(status) - ok_count - beyond_count)
+        if eta == "selected":
+            note = "selected_closure_baseline_candidate_not_final_truth"
+        elif ok_count == 0:
+            note = "target_prior_unavailable_in_valid_window_or_missing"
+        else:
+            note = "efficiency_prior_sensitivity_not_final_closure_pick"
+
+        for metric in EFFICIENCY_PRIOR_METRICS:
+            metric_col = metric
+            if eta == "selected" and metric == "target_pressure_mpa":
+                metric_col = "selected_closure_pressure_mpa"
+            if eta == "selected" and metric == "target_elapsed_seconds":
+                metric_col = "selected_closure_elapsed_seconds"
+            for target in EFFICIENCY_PRIOR_TARGETS:
+                if metric_col not in grp.columns or target not in grp.columns:
+                    pearson = spearman = np.nan
+                    n = 0
+                else:
+                    pearson, spearman, n = _pearson_spearman_series(
+                        grp[metric_col], grp[target]
+                    )
+                rows.append({
+                    "target_fluid_efficiency": eta,
+                    "target_Gc": target_g,
+                    "metric": metric,
+                    "target": target,
+                    "n": n,
+                    "pearson_r": pearson,
+                    "spearman_r": spearman,
+                    "ok_stage_count": ok_count,
+                    "beyond_window_count": beyond_count,
+                    "missing_stage_count": missing_count,
+                    "physical_plausibility_note": note,
+                })
+    return pd.DataFrame.from_records(rows)
+
+
+def build_g_time_scale_efficiency_diagnostic(
+    selected_summary: pd.DataFrame,
+    *,
+    scales: Sequence[tuple[float, str]] | None = None,
+) -> pd.DataFrame:
+    """只对 selected Gc 做 G-time scale compatibility sensitivity。"""
+    if scales is None:
+        scales = [
+            (1.0, "identity_current_definition"),
+            (math.pi / 4.0, "pi_over_4_convention_check"),
+            (4.0 / math.pi, "4_over_pi_convention_check"),
+            (2.0, "scale_2_convention_check"),
+            (4.0, "scale_4_convention_check"),
+        ]
+    rows: list[dict[str, Any]] = []
+    for _, row in selected_summary.iterrows():
+        g_c = pd.to_numeric(pd.Series([row.get("selected_closure_g_time")]), errors="coerce").iloc[0]
+        for scale, note in scales:
+            eta_scaled = np.nan
+            if np.isfinite(g_c) and g_c > 0 and np.isfinite(scale) and scale > 0:
+                scaled_g = scale * float(g_c)
+                eta_scaled = scaled_g / (scaled_g + 2.0)
+            rows.append({
+                "stage": row.get("stage"),
+                "scale": float(scale),
+                "selected_closure_g_time": g_c,
+                "eta_G_scaled": float(eta_scaled) if np.isfinite(eta_scaled) else np.nan,
+                "scale_note": note,
+            })
+    return pd.DataFrame.from_records(rows)
+
+
+def _find_target_stage_row(selected_summary: pd.DataFrame, stage_num: int) -> pd.Series:
+    matches = selected_summary[selected_summary["stage"].astype(int) == int(stage_num)]
+    if matches.empty:
+        return pd.Series(dtype=object)
+    return matches.iloc[0]
+
+
+def _empty_efficiency_prior_row(
+    *,
+    stage: int,
+    target_eta: float,
+    target_Gc: float,
+    status: str,
+    max_available_Gc: float = np.nan,
+    selected_row: pd.Series | None = None,
+    observations: pd.Series | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "stage": int(stage),
+        "target_fluid_efficiency": float(target_eta),
+        "target_Gc": float(target_Gc),
+        "target_status": status,
+        "target_elapsed_seconds": np.nan,
+        "target_nolte_g_time": np.nan,
+        "target_pressure_mpa": np.nan,
+        "max_available_Gc": max_available_Gc,
+        "selected_closure_g_time": np.nan,
+        "selected_closure_elapsed_seconds": np.nan,
+        "selected_g_function_efficiency": np.nan,
+        "target_minus_selected_Gc": np.nan,
+        "target_minus_selected_elapsed_seconds": np.nan,
+        "target_inside_valid_window": False,
+        "pkn_fracture_volume_m3": np.nan,
+        "pkn_leakoff_volume_m3": np.nan,
+        "pkn_nonstorage_volume_m3": np.nan,
+        "pkn_shutin_fluid_efficiency": np.nan,
+        "pkn_stable_storage_fraction": np.nan,
+        "microseismic_affected_volume": np.nan,
+        "electromagnetic_affected_area": np.nan,
+    }
+    if selected_row is not None and not selected_row.empty:
+        row["selected_closure_g_time"] = selected_row.get("selected_closure_g_time", np.nan)
+        row["selected_closure_elapsed_seconds"] = selected_row.get(
+            "selected_closure_elapsed_seconds", np.nan
+        )
+        row["selected_g_function_efficiency"] = selected_row.get(
+            "g_function_closure_efficiency", np.nan
+        )
+    if observations is not None and not observations.empty:
+        for col in EFFICIENCY_PRIOR_TARGETS:
+            if col in observations:
+                row[col] = observations.get(col, np.nan)
+    return row
+
+
+def run_efficiency_prior_closure_sweep(
+    *,
+    stage_params_path: str | Path,
+    well_root: str | Path,
+    manifest_path: str | Path,
+    observations_path: str | Path | None = None,
+    efficiency_grid: Sequence[float] = (0.10, 0.15, 0.20, 0.30, 0.40, 0.60),
+    volume_column: str = "total_volume",
+    rate_time_unit: str = "minute",
+    min_rate: float = 10.0,
+    g_time_m: float = 0.8,
+    elapsed_duplicate_policy: str = "keep-last",
+    pressure_source: str = "estimated-bottomhole",
+    stress_shadow_alpha: float = 1.0,
+    flow_allocation: str = "stress-shadow",
+    flow_allocation_exponent: float = 1.0,
+    pkn_C_coupling: str = "stage-constant",
+    pkn_H_w_m: float | None = None,
+    closure_mode: str = "both",
+    wellbore_storage_coeff_m3_per_mpa: float = 0.0,
+    perforation_friction_mpa: float = 0.0,
+    method_preference: str = "barree-then-mcclure",
+    well: str | None = None,
+    stable_min_elapsed_seconds: float = 15.0,
+    stable_min_points: int = 8,
+    stable_min_r2: float = 0.8,
+    stable_window_mode: str = "longest",
+) -> dict[str, pd.DataFrame]:
+    """运行 efficiency-prior closure candidate sweep。
+
+    默认 closure pick 不改变；selected baseline 由原 closure-batch 产生。
+    target eta 只作为 prior sensitivity：把 eta 映射成 target Gc，再找有效窗口中
+    最近的一行作为候选行，传入现有 physical PKN 计算。
+    """
+    if closure_mode not in ("selected", "efficiency-prior", "both"):
+        raise ValueError(f"unknown closure_mode: {closure_mode}")
+
+    selected_result = run_closure_batch(
+        stage_params_path=stage_params_path,
+        well_root=well_root,
+        manifest_path=manifest_path,
+        observations_path=observations_path,
+        volume_column=volume_column,
+        rate_time_unit=rate_time_unit,
+        min_rate=min_rate,
+        g_time_m=g_time_m,
+        elapsed_duplicate_policy=elapsed_duplicate_policy,
+        closure_min_elapsed_seconds=stable_min_elapsed_seconds,
+        pressure_source=pressure_source,
+        perforation_friction_mpa=perforation_friction_mpa,
+        wellbore_storage_coeff_m3_per_mpa=wellbore_storage_coeff_m3_per_mpa,
+        method_preference=method_preference,
+        stress_shadow_alpha=stress_shadow_alpha,
+        flow_allocation=flow_allocation,
+        flow_allocation_exponent=flow_allocation_exponent,
+        pkn_C_coupling=pkn_C_coupling,
+        pkn_H_w_m=pkn_H_w_m,
+        stable_min_elapsed_seconds=stable_min_elapsed_seconds,
+        stable_min_points=stable_min_points,
+        stable_min_r2=stable_min_r2,
+        stable_window_mode=stable_window_mode,
+        well=well,
+    )
+    selected_summary: pd.DataFrame = selected_result["summary"]
+
+    if closure_mode == "selected":
+        empty_stage_table = pd.DataFrame(columns=[
+            "stage",
+            "target_fluid_efficiency",
+            "target_Gc",
+            "target_status",
+            "target_elapsed_seconds",
+            "target_nolte_g_time",
+            "target_pressure_mpa",
+            "max_available_Gc",
+            "selected_closure_g_time",
+            "selected_closure_elapsed_seconds",
+            "selected_g_function_efficiency",
+            "target_minus_selected_Gc",
+            "target_minus_selected_elapsed_seconds",
+            "target_inside_valid_window",
+            "pkn_fracture_volume_m3",
+            "pkn_leakoff_volume_m3",
+            "pkn_nonstorage_volume_m3",
+            "pkn_shutin_fluid_efficiency",
+            "pkn_stable_storage_fraction",
+            "microseismic_affected_volume",
+            "electromagnetic_affected_area",
+        ])
+        return {
+            "stage_table": empty_stage_table,
+            "correlations": build_efficiency_prior_correlation_table(
+                empty_stage_table, selected_summary
+            ),
+            "availability": build_target_Gc_availability(empty_stage_table),
+            "g_time_scale": build_g_time_scale_efficiency_diagnostic(selected_summary),
+            "selected_summary": selected_summary,
+        }
+
+    observations: pd.DataFrame | None = None
+    if observations_path is not None:
+        observations = pd.read_csv(observations_path)
+        observations["stage"] = observations["stage"].astype(int)
+
+    stages_info = read_stage_params(stage_params_path)
+    manifest = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
+    missing_cols = sorted(_REQUIRED_MANIFEST_COLUMNS - set(manifest.columns))
+    if missing_cols:
+        raise ValueError(f"manifest 缺少必填列: {', '.join(missing_cols)}")
+
+    target_rows: list[dict[str, Any]] = []
+    target_pairs = [(float(eta), g_time_for_fluid_efficiency(float(eta))) for eta in efficiency_grid]
+
+    for _, mrow in manifest.iterrows():
+        stage_num = int(mrow["stage"])
+        selected_row = _find_target_stage_row(selected_summary, stage_num)
+        obs_row = pd.Series(dtype=object)
+        if observations is not None:
+            obs_match = observations[observations["stage"] == stage_num]
+            if not obs_match.empty:
+                obs_row = obs_match.iloc[0]
+
+        stage_info = _find_stage(stages_info, stage_num, well)
+        curve = read_stage_curve(Path(well_root) / stage_info.data_file)
+        shut_in_index = find_shut_in_index(curve, stage_info.shut_in_time)
+
+        tp_legacy = volume_over_max_rate_duration_seconds(
+            curve,
+            shut_in_index,
+            max_sustained_rate=float(mrow["max_sustained_rate"]),
+            rate_time_unit=rate_time_unit,
+            volume_column=volume_column,
+        )
+        pressure_col_pre = "wellhead_pressure_mpa"
+        if pressure_source == "estimated-bottomhole" and stage_info.liquid_column_pressure_mpa is not None:
+            curve_for_init = add_estimated_bottomhole_pressure(curve, stage_info)
+            pressure_col_pre = "estimated_bottomhole_pressure_mpa"
+        else:
+            curve_for_init = curve
+        initiation = pick_fracture_initiation_candidate(
+            curve_for_init,
+            shut_in_index,
+            pressure_column=pressure_col_pre,
+            minimum_stress_prior_mpa=stage_info.minimum_stress_prior_mpa,
+            min_rate=min_rate,
+        )
+        init_ok = initiation["fracture_initiation_status"] == "ok"
+        tp_corrected = initiation["tp_corrected_seconds"] if init_ok else tp_legacy
+        tp_for_g = tp_corrected if np.isfinite(tp_corrected) and tp_corrected > 0 else tp_legacy
+        init_idx = int(initiation["fracture_initiation_index"]) if init_ok else None
+        raw_vol = _compute_raw_injected_volume(curve, init_idx, shut_in_index, volume_column)
+
+        falloff = falloff_window_after_shut_in(
+            curve,
+            shut_in_index,
+            end_elapsed_seconds=float(mrow["valid_falloff_end_elapsed"]),
+        )
+        readiness_window = apply_elapsed_duplicate_policy(
+            falloff, policy=elapsed_duplicate_policy
+        )
+        elapsed = readiness_window["elapsed_seconds"].to_numpy(dtype=float)
+        if len(elapsed) < 3 or not np.isfinite(tp_for_g) or tp_for_g <= 0:
+            for eta, target_Gc in target_pairs:
+                target_rows.append(_empty_efficiency_prior_row(
+                    stage=stage_num,
+                    target_eta=eta,
+                    target_Gc=target_Gc,
+                    status="stage_window_not_ready",
+                    selected_row=selected_row,
+                    observations=obs_row,
+                ))
+            continue
+
+        g_time_arr = np.asarray(nolte_g_time(elapsed / tp_for_g, g_time_m), dtype=float)
+        pw, _p_col, p_vals = _get_pressure_column_and_values(
+            readiness_window, stage_info, pressure_source
+        )
+        if not np.all(np.isfinite(g_time_arr)) or not np.all(np.diff(g_time_arr) > 0):
+            for eta, target_Gc in target_pairs:
+                target_rows.append(_empty_efficiency_prior_row(
+                    stage=stage_num,
+                    target_eta=eta,
+                    target_Gc=target_Gc,
+                    status="g_time_not_strictly_increasing",
+                    max_available_Gc=float(np.nanmax(g_time_arr)) if len(g_time_arr) else np.nan,
+                    selected_row=selected_row,
+                    observations=obs_row,
+                ))
+            continue
+
+        p_shut_in = float(p_vals[0]) if len(p_vals) else np.nan
+        E_prime = stage_info.youngs_modulus_gpa * 1000.0 / (1.0 - stage_info.poissons_ratio ** 2) if (
+            stage_info.youngs_modulus_gpa is not None
+            and stage_info.poissons_ratio is not None
+            and np.isfinite(stage_info.youngs_modulus_gpa)
+            and np.isfinite(stage_info.poissons_ratio)
+        ) else np.nan
+        n_cl = stage_info.num_clusters if stage_info.num_clusters is not None else 0
+        spacings: list[float] | float = stage_info.cluster_spacings_list if stage_info.cluster_spacings_list else (
+            stage_info.cluster_spacing_m if stage_info.cluster_spacing_m is not None else 10.0
+        )
+        fleak_for_pkn = stage_info.fleak
+
+        for eta, target_Gc in target_pairs:
+            target = select_target_g_time_row(
+                g_time=g_time_arr,
+                elapsed_seconds=elapsed,
+                pressure_mpa=p_vals,
+                target_g_time=target_Gc,
+            )
+            base_row = _empty_efficiency_prior_row(
+                stage=stage_num,
+                target_eta=eta,
+                target_Gc=target_Gc,
+                status=target["target_status"],
+                max_available_Gc=target["max_available_Gc"],
+                selected_row=selected_row,
+                observations=obs_row,
+            )
+            base_row.update({
+                "target_elapsed_seconds": target["target_elapsed_seconds"],
+                "target_nolte_g_time": target["target_nolte_g_time"],
+                "target_pressure_mpa": target["target_pressure_mpa"],
+                "target_inside_valid_window": target["target_inside_valid_window"],
+            })
+            if np.isfinite(base_row["selected_closure_g_time"]):
+                base_row["target_minus_selected_Gc"] = (
+                    target_Gc - float(base_row["selected_closure_g_time"])
+                )
+            if (
+                np.isfinite(base_row["target_elapsed_seconds"])
+                and np.isfinite(base_row["selected_closure_elapsed_seconds"])
+            ):
+                base_row["target_minus_selected_elapsed_seconds"] = (
+                    float(base_row["target_elapsed_seconds"])
+                    - float(base_row["selected_closure_elapsed_seconds"])
+                )
+
+            if target["target_status"] != "ok":
+                target_rows.append(base_row)
+                continue
+
+            target_idx = int(target["target_row_index"])
+            vol_result = effective_volume_correction(
+                raw_vol,
+                p_shut_in,
+                float(target["target_pressure_mpa"]),
+                perforation_friction_mpa=perforation_friction_mpa,
+                wellbore_storage_coeff_m3_per_mpa=wellbore_storage_coeff_m3_per_mpa,
+            )
+            pkn_result = physical_pkn_volume_balance(
+                n_clusters=n_cl,
+                cluster_spacings_m=spacings,
+                H_w_m=pkn_H_w_m,
+                fleak=fleak_for_pkn,
+                E_prime_mpa=E_prime,
+                closure_pressure_mpa=float(target["target_pressure_mpa"]),
+                minimum_stress_prior_mpa=stage_info.minimum_stress_prior_mpa,
+                perforation_friction_mpa=perforation_friction_mpa,
+                g_time=g_time_arr,
+                pressure_mpa=p_vals,
+                elapsed_seconds=elapsed,
+                closure_index=target_idx,
+                tp_seconds=tp_for_g,
+                g_function_m=stage_info.g_function_m if stage_info.g_function_m is not None else g_time_m,
+                effective_injected_volume_m3=vol_result["effective_injected_volume_m3"],
+                alpha=stress_shadow_alpha,
+                flow_allocation=flow_allocation,
+                flow_allocation_exponent=flow_allocation_exponent,
+                C_coupling=pkn_C_coupling,
+                stable_min_elapsed_seconds=stable_min_elapsed_seconds,
+                stable_min_points=stable_min_points,
+                stable_min_r2=stable_min_r2,
+                stable_window_mode=stable_window_mode,
+            )
+            base_row.update({
+                "pkn_fracture_volume_m3": pkn_result.get("pkn_fracture_volume_m3", np.nan),
+                "pkn_leakoff_volume_m3": pkn_result.get("pkn_leakoff_volume_m3", np.nan),
+                "pkn_nonstorage_volume_m3": pkn_result.get("pkn_nonstorage_volume_m3", np.nan),
+                "pkn_shutin_fluid_efficiency": pkn_result.get("pkn_shutin_fluid_efficiency", np.nan),
+                "pkn_stable_storage_fraction": pkn_result.get("pkn_stable_storage_fraction", np.nan),
+            })
+            target_rows.append(base_row)
+
+    stage_table = pd.DataFrame.from_records(target_rows)
+    selected_for_correlation = (
+        selected_summary if closure_mode == "both" else pd.DataFrame()
+    )
+    correlations = build_efficiency_prior_correlation_table(
+        stage_table, selected_for_correlation
+    )
+    availability = build_target_Gc_availability(stage_table)
+    scale_diagnostic = build_g_time_scale_efficiency_diagnostic(selected_summary)
+    return {
+        "stage_table": stage_table,
+        "correlations": correlations,
+        "availability": availability,
+        "g_time_scale": scale_diagnostic,
+        "selected_summary": selected_summary,
+    }
 
 
 def compute_C_multiplier_to_fluid_efficiency(

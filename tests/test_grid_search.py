@@ -427,6 +427,28 @@ def test_cli_parser_accepts_closure_efficiency_audit():
     assert args.tp_multipliers == "0.5,1.0"
 
 
+def test_cli_parser_accepts_closure_efficiency_sweep():
+    from clotho.cli import build_parser
+
+    args = build_parser().parse_args([
+        "closure-efficiency-sweep",
+        "--stage-params", "/tmp/stage_params.csv",
+        "--well-root", "/tmp/well4",
+        "--manifest", "/tmp/manifest.csv",
+        "--observations", "/tmp/observations.csv",
+        "--output", "/tmp/phase5i/stage.csv",
+        "--correlation-output", "/tmp/phase5i/corr.csv",
+        "--availability-output", "/tmp/phase5i/availability.csv",
+        "--g-time-scale-output", "/tmp/phase5i/scale.csv",
+        "--efficiency-grid", "0.10,0.20",
+        "--pkn-Hw-m", "50",
+    ])
+
+    assert args.command == "closure-efficiency-sweep"
+    assert args.efficiency_grid == "0.10,0.20"
+    assert args.pkn_Hw_m == pytest.approx(50.0)
+
+
 def test_count_perf_modes_expand_correctly():
     grid = _trivial_grid(
         perf_friction_mode=["none", "constant", "orifice"],

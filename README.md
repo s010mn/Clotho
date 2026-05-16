@@ -75,6 +75,11 @@ stage 参数表
   - 从已有 `closure-batch` summary 派生 `closure_g_time_efficiency_audit.csv`；
   - 对固定 closure elapsed 做 tp multiplier sensitivity；
   - 只做诊断交叉检查，不修改 PKN、`I_F`、H_w 默认或 closure pick。
+- efficiency-prior closure candidate sweep（Phase 5I, `closure-efficiency-sweep`）：
+  - 把 target fluid efficiency 映射为 target `G_c`；
+  - 在当前有效 falloff window 内寻找最接近 target `G_c` 的候选行；
+  - 输出 selected baseline vs target prior 的可达性和相关性 CSV；
+  - 只做 sensitivity audit，不修改默认 closure pick、PKN、`I_F` 或 H_w。
 
 ## 当前不做
 
@@ -319,6 +324,32 @@ uv run python -m clotho closure-efficiency-audit \
 
 说明：`eta_G = G_c / (G_c + 2)` 只作为当前 G-time 定义下的 diagnostic cross-check；
 公式口径和具体 Nolte 实现是否完全兼容仍需人工复核，不能把低效率写成最终物理事实。
+
+Phase 5I efficiency-prior closure sweep 示例：
+
+```bash
+uv run python -m clotho closure-efficiency-sweep \
+  --stage-params /path/to/well/stage_params.csv \
+  --well-root /path/to/well \
+  --manifest /tmp/manifest.csv \
+  --observations /tmp/observations.csv \
+  --output /tmp/gfunction-ref-audit-phase5i/efficiency_prior_stage_table.csv \
+  --correlation-output /tmp/gfunction-ref-audit-phase5i/efficiency_prior_correlations.csv \
+  --availability-output /tmp/gfunction-ref-audit-phase5i/target_Gc_availability.csv \
+  --g-time-scale-output /tmp/gfunction-ref-audit-phase5i/G_time_scale_efficiency_diagnostic.csv \
+  --efficiency-grid 0.10,0.15,0.20,0.30,0.40,0.60 \
+  --volume-column total_volume \
+  --rate-time-unit minute \
+  --min-rate 10 \
+  --g-time-m 0.8 \
+  --elapsed-duplicate-policy keep-last \
+  --pressure-source estimated-bottomhole \
+  --pkn-Hw-m 50
+```
+
+说明：efficiency prior 只回答“经验效率对应的 `G_c` 在当前窗口内是否可达、比
+selected closure 晚多少、相关性如何变化”。它不能替换 closure truth，也不能用来
+把结果校准到某个固定效率。
 
 ## 数据边界
 

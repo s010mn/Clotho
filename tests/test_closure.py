@@ -11,8 +11,12 @@ import pytest
 
 from clotho.closure import (
     K_lp,
+    PHYSICAL_PKN_HW_M,
     PHYSICAL_PKN_IF,
+    build_efficiency_prior_correlation_table,
+    build_g_time_scale_efficiency_diagnostic,
     build_observation_correlation_table,
+    build_target_Gc_availability,
     classify_closure_elapsed_over_tp,
     classify_closure_elapsed_seconds,
     classify_closure_g_time,
@@ -21,6 +25,7 @@ from clotho.closure import (
     compute_g_function_closure_efficiency,
     compute_physical_leakoff_C,
     compute_tp_scaled_g_time,
+    g_time_for_fluid_efficiency,
     reconcile_fluid_efficiencies,
     compute_stress_shadow,
     effective_volume_correction,
@@ -31,6 +36,7 @@ from clotho.closure import (
     pick_fracture_initiation_candidate,
     pick_mcclure_compliance_closure_candidate,
     pick_stable_pressure_g_segment,
+    select_target_g_time_row,
     run_closure_batch,
     select_closure_candidate,
     write_closure_batch_outputs,
@@ -218,6 +224,151 @@ class TestClosureEfficiencyAuditHelpers:
     def test_eta_g_formula_reference_values(self, g_time, expected_efficiency):
         result = compute_g_function_closure_efficiency(g_time)
         assert result["g_function_closure_efficiency"] == pytest.approx(expected_efficiency)
+
+    @pytest.mark.parametrize(
+        ("eta", "expected_g_time"),
+        [
+            (0.10, 0.222222222222),
+            (0.20, 0.5),
+            (0.30, 0.857142857143),
+            (0.40, 1.333333333333),
+            (0.60, 3.0),
+        ],
+    )
+    def test_g_time_for_fluid_efficiency_reference_values(self, eta, expected_g_time):
+        assert g_time_for_fluid_efficiency(eta) == pytest.approx(expected_g_time)
+
+    @pytest.mark.parametrize("eta", [0.0, 1.0, -0.1])
+    def test_g_time_for_fluid_efficiency_rejects_invalid_eta(self, eta):
+        with pytest.raises(ValueError):
+            g_time_for_fluid_efficiency(eta)
+
+    def test_target_g_time_row_selection_uses_first_nearest_on_tie(self):
+        result = select_target_g_time_row(
+            g_time=np.array([0.1, 0.4, 0.6, 1.0]),
+            elapsed_seconds=np.array([10.0, 40.0, 60.0, 100.0]),
+            pressure_mpa=np.array([100.0, 96.0, 94.0, 90.0]),
+            target_g_time=0.5,
+        )
+
+        assert result["target_status"] == "ok"
+        assert result["target_row_index"] == 1
+        assert result["target_nolte_g_time"] == pytest.approx(0.4)
+        assert result["target_elapsed_seconds"] == pytest.approx(40.0)
+        assert result["target_pressure_mpa"] == pytest.approx(96.0)
+
+    def test_target_g_time_row_selection_marks_beyond_window(self):
+        result = select_target_g_time_row(
+            g_time=np.array([0.1, 0.2, 0.3]),
+            elapsed_seconds=np.array([10.0, 20.0, 30.0]),
+            pressure_mpa=np.array([100.0, 99.0, 98.0]),
+            target_g_time=0.5,
+        )
+
+        assert result["target_status"] == "target_Gc_beyond_valid_window"
+        assert result["max_available_Gc"] == pytest.approx(0.3)
+        assert result["target_inside_valid_window"] is False
+
+    def test_target_g_time_row_selection_marks_missing_pressure_at_nearest_row(self):
+        result = select_target_g_time_row(
+            g_time=np.array([0.1, 0.4, 0.6, 1.0]),
+            elapsed_seconds=np.array([10.0, 40.0, 60.0, 100.0]),
+            pressure_mpa=np.array([100.0, np.nan, 94.0, 90.0]),
+            target_g_time=0.5,
+        )
+
+        assert result["target_status"] == "target_pressure_missing"
+        assert result["target_row_index"] == 1
+        assert result["target_nolte_g_time"] == pytest.approx(0.4)
+        assert np.isnan(result["target_pressure_mpa"])
+
+    def test_efficiency_prior_correlations_include_selected_and_target_rows(self):
+        stage_table = pd.DataFrame({
+            "stage": [1, 2, 3, 1, 2, 3],
+            "target_fluid_efficiency": [0.2, 0.2, 0.2, 0.4, 0.4, 0.4],
+            "target_Gc": [0.5, 0.5, 0.5, 1.3333333333, 1.3333333333, 1.3333333333],
+            "target_status": ["ok", "ok", "target_Gc_beyond_valid_window", "ok", "ok", "ok"],
+            "pkn_fracture_volume_m3": [10.0, 20.0, np.nan, 12.0, 22.0, 32.0],
+            "pkn_leakoff_volume_m3": [30.0, 20.0, np.nan, 32.0, 22.0, 12.0],
+            "pkn_nonstorage_volume_m3": [90.0, 80.0, np.nan, 92.0, 82.0, 72.0],
+            "pkn_shutin_fluid_efficiency": [0.10, 0.20, np.nan, 0.11, 0.21, 0.31],
+            "target_pressure_mpa": [100.0, 95.0, np.nan, 99.0, 94.0, 89.0],
+            "target_elapsed_seconds": [100.0, 200.0, np.nan, 300.0, 400.0, 500.0],
+            "microseismic_affected_volume": [100.0, 200.0, 300.0, 100.0, 200.0, 300.0],
+            "electromagnetic_affected_area": [300.0, 200.0, 100.0, 300.0, 200.0, 100.0],
+        })
+        selected_summary = pd.DataFrame({
+            "stage": [1, 2, 3],
+            "selected_closure_status": ["ok", "ok", "ok"],
+            "pkn_volume_status": ["ok", "ok", "ok"],
+            "pkn_fracture_volume_m3": [9.0, 19.0, 29.0],
+            "pkn_leakoff_volume_m3": [29.0, 19.0, 9.0],
+            "pkn_nonstorage_volume_m3": [91.0, 81.0, 71.0],
+            "pkn_shutin_fluid_efficiency": [0.09, 0.19, 0.29],
+            "selected_closure_pressure_mpa": [101.0, 96.0, 91.0],
+            "selected_closure_elapsed_seconds": [90.0, 190.0, 290.0],
+            "microseismic_affected_volume": [100.0, 200.0, 300.0],
+            "electromagnetic_affected_area": [300.0, 200.0, 100.0],
+        })
+
+        corr = build_efficiency_prior_correlation_table(stage_table, selected_summary)
+
+        assert "selected" in set(corr["target_fluid_efficiency"].astype(str))
+        assert "0.2" in set(corr["target_fluid_efficiency"].astype(str))
+        selected_storage = corr[
+            (corr["target_fluid_efficiency"].astype(str) == "selected")
+            & (corr["metric"] == "pkn_fracture_volume_m3")
+            & (corr["target"] == "microseismic_affected_volume")
+        ]
+        target_storage = corr[
+            (corr["target_fluid_efficiency"].astype(str) == "0.2")
+            & (corr["metric"] == "pkn_fracture_volume_m3")
+            & (corr["target"] == "microseismic_affected_volume")
+        ]
+        assert len(selected_storage) == 1
+        assert len(target_storage) == 1
+        assert int(target_storage.iloc[0]["ok_stage_count"]) == 2
+        assert int(target_storage.iloc[0]["beyond_window_count"]) == 1
+
+    def test_target_Gc_availability_counts_beyond_window(self):
+        stage_table = pd.DataFrame({
+            "target_fluid_efficiency": [0.2, 0.2, 0.2],
+            "target_Gc": [0.5, 0.5, 0.5],
+            "target_status": ["ok", "target_Gc_beyond_valid_window", "target_pressure_missing"],
+            "target_elapsed_seconds": [100.0, np.nan, np.nan],
+            "target_minus_selected_elapsed_seconds": [60.0, np.nan, np.nan],
+            "target_pressure_mpa": [95.0, np.nan, np.nan],
+            "selected_closure_g_time": [0.1, 0.2, 0.3],
+            "max_available_Gc": [1.0, 0.3, 0.8],
+        })
+
+        availability = build_target_Gc_availability(stage_table)
+
+        assert len(availability) == 1
+        row = availability.iloc[0]
+        assert row["ok_stage_count"] == 1
+        assert row["beyond_valid_window_count"] == 1
+        assert row["missing_stage_count"] == 1
+        assert row["median_target_elapsed_seconds"] == pytest.approx(100.0)
+
+    def test_g_time_scale_efficiency_diagnostic_uses_selected_g_time(self):
+        selected_summary = pd.DataFrame({
+            "stage": [1],
+            "selected_closure_g_time": [0.5],
+        })
+
+        diagnostic = build_g_time_scale_efficiency_diagnostic(
+            selected_summary,
+            scales=[(1.0, "identity")],
+        )
+
+        assert len(diagnostic) == 1
+        assert diagnostic.iloc[0]["eta_G_scaled"] == pytest.approx(0.2)
+        assert diagnostic.iloc[0]["scale_note"] == "identity"
+
+    def test_physical_pkn_constants_unchanged(self):
+        assert PHYSICAL_PKN_IF == pytest.approx(0.722464726919, rel=1e-12)
+        assert PHYSICAL_PKN_HW_M == pytest.approx(50.0)
 
 
 class TestBarreeTangentClosure:

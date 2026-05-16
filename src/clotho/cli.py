@@ -12,6 +12,7 @@ from clotho.batch import run_derivative_batch
 from clotho.closure import (
     build_closure_g_time_efficiency_audit,
     build_tp_sensitivity_efficiency,
+    run_efficiency_prior_closure_sweep,
     run_closure_batch,
     write_closure_batch_outputs,
 )
@@ -288,6 +289,34 @@ def build_parser() -> argparse.ArgumentParser:
         default="0.5,0.7,0.85,1.0,1.15,1.3",
         help="Comma-separated tp multipliers for fixed-closure sensitivity.",
     )
+
+    closure_eff_sweep = subparsers.add_parser(
+        "closure-efficiency-sweep",
+        help="Phase 5I efficiency-prior closure candidate sweep. CSV-only sensitivity; does not change default closure pick.",
+    )
+    closure_eff_sweep.add_argument("--stage-summary", default=None, type=Path, help="Optional existing selected closure summary; accepted for audit provenance.")
+    closure_eff_sweep.add_argument("--stage-params", required=True, type=Path)
+    closure_eff_sweep.add_argument("--well-root", required=True, type=Path)
+    closure_eff_sweep.add_argument("--manifest", required=True, type=Path)
+    closure_eff_sweep.add_argument("--observations", required=True, type=Path)
+    closure_eff_sweep.add_argument("--output", required=True, type=Path)
+    closure_eff_sweep.add_argument("--correlation-output", required=True, type=Path)
+    closure_eff_sweep.add_argument("--availability-output", required=True, type=Path)
+    closure_eff_sweep.add_argument("--g-time-scale-output", required=True, type=Path)
+    closure_eff_sweep.add_argument("--efficiency-grid", default="0.10,0.15,0.20,0.30,0.40,0.60")
+    closure_eff_sweep.add_argument("--closure-mode", choices=["selected", "efficiency-prior", "both"], default="both")
+    closure_eff_sweep.add_argument("--volume-column", default="total_volume")
+    closure_eff_sweep.add_argument("--rate-time-unit", choices=["second", "minute"], default="minute")
+    closure_eff_sweep.add_argument("--min-rate", default=10.0, type=float)
+    closure_eff_sweep.add_argument("--g-time-m", default=0.8, type=float)
+    closure_eff_sweep.add_argument("--elapsed-duplicate-policy", choices=["none", "keep-first", "keep-last", "mean"], default="keep-last")
+    closure_eff_sweep.add_argument("--pressure-source", choices=["estimated-bottomhole", "wellhead"], default="estimated-bottomhole")
+    closure_eff_sweep.add_argument("--stress-shadow-alpha", default=1.0, type=float)
+    closure_eff_sweep.add_argument("--flow-allocation", choices=["stress-shadow", "uniform"], default="stress-shadow")
+    closure_eff_sweep.add_argument("--flow-allocation-exponent", default=1.0, type=float)
+    closure_eff_sweep.add_argument("--pkn-C-coupling", choices=["stage-constant", "shadow-scaled"], default="stage-constant")
+    closure_eff_sweep.add_argument("--pkn-Hw-m", default=None, type=float)
+    closure_eff_sweep.add_argument("--well", default=None)
 
     grid = subparsers.add_parser(
         "pkn-grid-search",
@@ -1039,6 +1068,61 @@ def _run_closure_efficiency_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_closure_efficiency_sweep(args: argparse.Namespace) -> int:
+    for path in [
+        args.output,
+        args.correlation_output,
+        args.availability_output,
+        args.g_time_scale_output,
+    ]:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+    result = run_efficiency_prior_closure_sweep(
+        stage_params_path=args.stage_params,
+        well_root=args.well_root,
+        manifest_path=args.manifest,
+        observations_path=args.observations,
+        efficiency_grid=parse_float_grid(args.efficiency_grid),
+        volume_column=args.volume_column,
+        rate_time_unit=args.rate_time_unit,
+        min_rate=args.min_rate,
+        g_time_m=args.g_time_m,
+        elapsed_duplicate_policy=args.elapsed_duplicate_policy,
+        pressure_source=args.pressure_source,
+        stress_shadow_alpha=args.stress_shadow_alpha,
+        flow_allocation=args.flow_allocation,
+        flow_allocation_exponent=args.flow_allocation_exponent,
+        pkn_C_coupling=args.pkn_C_coupling,
+        pkn_H_w_m=args.pkn_Hw_m,
+        closure_mode=args.closure_mode,
+        well=args.well,
+    )
+    result["stage_table"].to_csv(args.output, index=False)
+    result["correlations"].to_csv(args.correlation_output, index=False)
+    result["availability"].to_csv(args.availability_output, index=False)
+    result["g_time_scale"].to_csv(args.g_time_scale_output, index=False)
+
+    print(f"closure_efficiency_sweep_output_path={args.output}")
+    print(f"closure_efficiency_sweep_correlation_output_path={args.correlation_output}")
+    print(f"closure_efficiency_sweep_availability_output_path={args.availability_output}")
+    print(f"closure_efficiency_sweep_g_time_scale_output_path={args.g_time_scale_output}")
+    print(f"closure_efficiency_sweep_stage_rows={len(result['stage_table'])}")
+    if not result["availability"].empty:
+        for _, row in result["availability"].iterrows():
+            print(
+                "closure_efficiency_sweep_target="
+                f"{row['target_eta']}:ok={int(row['ok_stage_count'])},"
+                f"beyond={int(row['beyond_valid_window_count'])},"
+                f"missing={int(row['missing_stage_count'])}"
+            )
+    print("closure_efficiency_sweep_default_closure_pick_changed=False")
+    print("closure_efficiency_sweep_formula_default_changed=False")
+    print("closure_efficiency_sweep_I_F_changed=False")
+    print("closure_efficiency_sweep_H_w_default_changed=False")
+    print("closure_efficiency_sweep_is_final_physical_conclusion=False")
+    return 0
+
+
 def _run_pkn_grid_search(args: argparse.Namespace) -> int:
     grid_kwargs = {
         "closure_min_elapsed_seconds": parse_float_grid(args.closure_min_elapsed_grid),
@@ -1151,6 +1235,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "closure-efficiency-audit":
         try:
             return _run_closure_efficiency_audit(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "closure-efficiency-sweep":
+        try:
+            return _run_closure_efficiency_sweep(args)
         except ValueError as exc:
             parser.error(str(exc))
     if args.command == "pkn-grid-search":

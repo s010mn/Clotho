@@ -3772,3 +3772,102 @@ Scope confirmation:
 - no real data added to repo；
 - no `/tmp` CSV/PNG committed；
 - no push master；
+
+## Phase 5I：efficiency-prior closure candidate sweep
+
+Phase 5I adds a CSV-only `closure-efficiency-sweep` diagnostic. It compares the
+current selected closure candidate with closure candidates implied by target
+fluid-efficiency priors. This is a sensitivity audit only, not a replacement
+for selected closure or a final physical interpretation.
+
+Implementation:
+
+- Added `g_time_for_fluid_efficiency(eta)`:
+  - `Gc = 2 * eta / (1 - eta)`;
+  - invalid `eta <= 0` or `eta >= 1` raises `ValueError`.
+- Added nearest target-Gc row selection within the current valid falloff window:
+  - target beyond window -> `target_Gc_beyond_valid_window`;
+  - nearest target row with missing pressure -> `target_pressure_missing`;
+  - tie selection is stable and uses the first nearest row.
+- Added `run_efficiency_prior_closure_sweep()` and CLI command
+  `clotho closure-efficiency-sweep`.
+- Added CSV outputs:
+  - `efficiency_prior_stage_table.csv`;
+  - `efficiency_prior_correlations.csv`;
+  - `target_Gc_availability.csv`;
+  - `G_time_scale_efficiency_diagnostic.csv`.
+- Correlation output includes both selected closure baseline rows and
+  efficiency-prior target rows.
+- Added lightweight synthetic tests for:
+  - target eta -> Gc mapping;
+  - invalid eta rejection;
+  - target row selection;
+  - target beyond-window handling;
+  - selected baseline plus target eta correlation rows;
+  - unchanged `PHYSICAL_PKN_IF` and default H_w constants.
+
+Reference smoke outside repo:
+
+```text
+output_dir: /tmp/gfunction-ref-audit-phase5i/
+stage rows: 168
+
+target eta 0.10: ok=7, beyond_valid_window=21, missing=0, target_Gc=0.222222
+target eta 0.15: ok=0, beyond_valid_window=28, missing=0, target_Gc=0.352941
+target eta 0.20: ok=0, beyond_valid_window=28, missing=0, target_Gc=0.500000
+target eta 0.30: ok=0, beyond_valid_window=28, missing=0, target_Gc=0.857143
+target eta 0.40: ok=0, beyond_valid_window=28, missing=0, target_Gc=1.333333
+target eta 0.60: ok=0, beyond_valid_window=28, missing=0, target_Gc=3.000000
+median max_available_Gc: 0.201461
+median selected_closure_g_time: 0.112335
+```
+
+For target eta 0.10, only 7/28 stages are available; median target elapsed is
+1162 s and the median target-minus-selected elapsed is +509 s. For target eta
+0.20 and higher, all stages are beyond the current valid window, so target-prior
+PKN correlations are unavailable (`n=0`).
+
+Selected closure baseline correlations:
+
+```text
+storage vs microseismic Pearson=-0.235, Spearman=-0.257, n=28
+storage vs EM Pearson=+0.014, Spearman=+0.128, n=28
+leakoff vs microseismic Pearson=+0.238, Spearman=+0.361, n=28
+leakoff vs EM Pearson=+0.594, Spearman=+0.169, n=28
+nonstorage vs EM Pearson=+0.594, Spearman=+0.169, n=28
+```
+
+G-time scale diagnostic on selected Gc:
+
+```text
+scale pi/4: median eta_G=0.042
+scale 1.0:  median eta_G=0.053
+scale 4/pi: median eta_G=0.067
+scale 2.0:  median eta_G=0.101
+scale 4.0:  median eta_G=0.183
+```
+
+Conclusion:
+
+- Current selected closure `Gc` remains very low.
+- Target 20% efficiency (`Gc=0.5`) is not reachable for any computed well4
+  stage within the current valid window.
+- If a target prior is reachable, it is later than the selected closure
+  candidate; target 10% is available in only 7/28 stages and has median
+  target-minus-selected elapsed of +509 s.
+- Conventional G-time scale factors do not materially raise selected
+  `eta_G` into the 20% range; arbitrary larger scale factors must not be used
+  to calibrate the result.
+- This points to selected closure timing, valid-window length, `tp`, and
+  G-time/efficiency formula compatibility as manual-review priorities.
+
+Scope confirmation:
+
+- no default closure pick changes；
+- no physical PKN formula default changes；
+- no `I_F` change；
+- no H_w default change；
+- no real data added to repo；
+- no `/tmp` CSV/PNG committed；
+- no push master；
+- efficiency prior remains sensitivity only；

@@ -266,3 +266,27 @@ well4 baseline 中：
 - 当前已实现 `pkn-grid-search --workers` 和 `--parallel-backend {thread,process}`，
   但 full grid 仍不应硬跑或冒充完成；
 - 不修改 I_F，不修改 H_w 默认，不把 20% 当固定真值。
+
+## 29. Phase 5I efficiency-prior closure sweep 后续
+
+Phase 5I 新增 `clotho closure-efficiency-sweep`，把经验 fluid efficiency prior
+映射成 target `G_c`，再检查这些 target 是否落在当前 valid falloff window 内。
+
+当前 well4 smoke 的关键现象：
+
+- target eta 0.10 (`Gc=0.222`) 只有 7/28 个 computed stage 可达；
+- target eta 0.20 (`Gc=0.5`) 到 0.60 (`Gc=3.0`) 全部 0/28 可达；
+- median max_available_Gc 约 0.201，接近但低于 10% efficiency target；
+- 可达的 10% target candidate 比 selected closure median 晚约 509 s；
+- 常见 G-time scale convention (`pi/4`, `4/pi`) 不能把 selected `eta_G` 抬到 20%。
+
+需要继续做：
+
+- 人工检查 manifest 的 `valid_falloff_end_elapsed` 是否过短，导致 target `Gc=0.5`
+  在所有 stage 中不可达；
+- 人工复核 `tp_corrected_seconds` 和起裂时刻，判断 `delta=t/tp` 是否被系统性压小；
+- 对 7 个 target eta 0.10 可达 stage 画 `G·dP/dG vs G` 与压力曲线，判断 selected
+  closure 是否过早；
+- 复核 `eta_G=G_c/(G_c+2)` 与当前 post-shut-in offset G-time 的公式兼容性；
+- 不把 target efficiency prior 当作 closure truth；
+- 不用任意 G-time scale factor 把效率校准到 20%。
