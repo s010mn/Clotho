@@ -3669,3 +3669,106 @@ Scope confirmation:
 - no `/tmp` CSV/PNG committed；
 - no push master；
 - no validation claim.
+
+## Phase 5H.1：closure G-time and fluid-efficiency root-cause audit
+
+Phase 5H.1 adds a focused root-cause audit for the low fluid-efficiency values
+seen in Phase 5H. This is an implementation / diagnostic stage, not a final
+physical interpretation.
+
+Implementation:
+
+- Added `closure-efficiency-audit` CLI command.
+- Added stage-level audit builder:
+  - `closure_g_time_efficiency_audit.csv`
+  - `closure_Gc_class`
+  - `closure_elapsed_class`
+  - `closure_elapsed_over_tp_class`
+  - `Gc_implied_by_g_function_efficiency`
+  - `eta_G`
+  - 20% / 40% reference Gc columns.
+- Added fixed-closure `tp` sensitivity:
+  - `tp_sensitivity_efficiency.csv`
+  - `tp_sensitivity_efficiency_summary.csv`
+  - multipliers: 0.5, 0.7, 0.85, 1.0, 1.15, 1.3.
+- Ran `closure_min_elapsed_seconds` sensitivity at 15, 30, 60, 120 s and wrote
+  `/tmp/gfunction-ref-audit-phase5h1/closure_min_elapsed_efficiency_summary.csv`.
+- Added lightweight synthetic tests for:
+  - Gc class thresholds;
+  - closure elapsed / tp class thresholds;
+  - `tp` sensitivity recalculating G;
+  - `eta_G = G_c/(G_c+2)` reference values.
+
+Formula compatibility audit:
+
+- Current `nolte_g_time(delta, m, delta0=0.0)` includes `4/pi` and starts from
+  shut-in `delta=0` by default:
+
+```text
+G(delta,m;delta0) = 4/pi * [g(delta,m) - g(delta0,m)]
+```
+
+- `selected_closure_g_time` is the selected closure candidate's value on that
+  current post-shut-in offset G-time scale.
+- `eta_G = G_c/(G_c+2)` remains a diagnostic cross-check under this current
+  G-time definition. Formula compatibility with this exact Nolte implementation
+  remains a TODO and was not silently "fixed" with a scale factor.
+
+Real well4 baseline audit outside repo:
+
+```text
+output_dir: /tmp/gfunction-ref-audit-phase5h1/
+
+selected_closure_g_time: min=0.015, median=0.112, max=0.196
+g_function_closure_efficiency: min=0.008, median=0.053, max=0.089
+selected_closure_elapsed_seconds: min=70, median=614, max=941
+tp_corrected_seconds: min=8521, median=10337.5, max=28745
+closure_elapsed_over_tp: min=0.0068, median=0.0550, max=0.1007
+count Gc < 0.2: 28
+count Gc < 0.5: 28
+count eta_G < 0.1: 28
+count eta_G < 0.2: 28
+closure methods: barree=27, mcclure=1, none=2
+```
+
+tp sensitivity median `eta_G`:
+
+```text
+0.50 -> 0.096
+0.70 -> 0.072
+0.85 -> 0.061
+1.00 -> 0.053
+1.15 -> 0.047
+1.30 -> 0.042
+```
+
+closure_min_elapsed sensitivity:
+
+```text
+15s:  computed=28, median Gc=0.112, median eta_G=0.053, median PKN eta=0.079
+30s:  computed=28, median Gc=0.110, median eta_G=0.052, median PKN eta=0.079
+60s:  computed=28, median Gc=0.110, median eta_G=0.052, median PKN eta=0.083
+120s: computed=28, median Gc=0.113, median eta_G=0.054, median PKN eta=0.086
+```
+
+Conclusion:
+
+- Current PKN and G-function efficiencies are both low and broadly reconciled.
+- Low efficiency is tied directly to low selected closure `G_c` and may also
+  involve `tp` / G-time definition choices.
+- This is not simply evidence that `C_stage` is too large.
+- Reducing `tp` raises `eta_G`, but even `tp_multiplier=0.5` leaves median
+  `eta_G` below 0.1.
+- Delaying closure search start to 60 or 120 s does not materially raise median
+  `G_c` / `eta_G` and does not reduce computed stage count.
+- Low efficiency is not recorded as final high-leakoff physics. Manual review
+  is still required for closure pick, G-time definition, and `tp`.
+
+Scope confirmation:
+
+- no PKN formula default changes；
+- no `I_F` change；
+- no H_w default change；
+- no real data added to repo；
+- no `/tmp` CSV/PNG committed；
+- no push master；

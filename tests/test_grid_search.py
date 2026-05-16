@@ -412,6 +412,21 @@ def test_cli_parser_accepts_grid_workers():
     assert "process" in ALLOWED_PARALLEL_BACKENDS
 
 
+def test_cli_parser_accepts_closure_efficiency_audit():
+    from clotho.cli import build_parser
+
+    args = build_parser().parse_args([
+        "closure-efficiency-audit",
+        "--summary", "/tmp/summary.csv",
+        "--output-dir", "/tmp/phase5h1",
+        "--tp-multipliers", "0.5,1.0",
+    ])
+
+    assert args.summary == Path("/tmp/summary.csv")
+    assert args.output_dir == Path("/tmp/phase5h1")
+    assert args.tp_multipliers == "0.5,1.0"
+
+
 def test_count_perf_modes_expand_correctly():
     grid = _trivial_grid(
         perf_friction_mode=["none", "constant", "orifice"],

@@ -259,6 +259,9 @@ well4 baseline 中：
 - 人工复核 selected closure G-time，尤其低 Gc 是否来自 early closure pick；
 - 对 stage 5、17、29 等低效率 / 高 C_stage 段复核 stable P-vs-G 选段；
 - 对 `C_multiplier_to_g_function_efficiency` 显著偏离 1 的 stage 做单段 plot audit；
+- 人工复核 `eta_G=G_c/(G_c+2)` 与当前 `nolte_g_time(delta,m,delta0=0)` 数值尺度是否完全兼容；
+- 结合 Phase 5H.1 的 tp sensitivity 和 closure_min_elapsed sensitivity 判断低 Gc
+  是 tp/G-time 口径、closure candidate 偏早，还是可能存在快速闭合 / 高 leakoff；
 - 若要跑 Phase 5H 全建议 grid（129,600 cases），先做 stage-level cache 或进一步压缩轴；
 - 当前已实现 `pkn-grid-search --workers` 和 `--parallel-backend {thread,process}`，
   但 full grid 仍不应硬跑或冒充完成；

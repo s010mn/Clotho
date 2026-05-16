@@ -9,7 +9,12 @@ import pandas as pd
 
 from clotho import __version__
 from clotho.batch import run_derivative_batch
-from clotho.closure import run_closure_batch, write_closure_batch_outputs
+from clotho.closure import (
+    build_closure_g_time_efficiency_audit,
+    build_tp_sensitivity_efficiency,
+    run_closure_batch,
+    write_closure_batch_outputs,
+)
 from clotho.grid_search import (
     ALLOWED_COUPLING,
     ALLOWED_FLOW_ALLOCATION,
@@ -270,6 +275,19 @@ def build_parser() -> argparse.ArgumentParser:
     closure_batch.add_argument("--flow-allocation-exponent", default=1.0, type=float, help="Flow allocation exponent gamma (eta_i = xi_i^gamma / sum).")
     closure_batch.add_argument("--pkn-C-coupling", choices=["stage-constant", "shadow-scaled"], default="stage-constant", help="Per-cluster leakoff coupling. stage-constant: C_L_i = C_stage; shadow-scaled: C_L_i = xi_i * C_stage (legacy Phase 5D.4 coupling).")
     closure_batch.add_argument("--pkn-Hw-m", default=None, type=float, help="Explicit PKN fracture height H_w in meters. Omit to use the default 50 m.")
+
+    closure_eff_audit = subparsers.add_parser(
+        "closure-efficiency-audit",
+        help="Build Phase 5H.1 closure G-time / tp / efficiency diagnostic CSVs from a closure-batch summary.",
+    )
+    closure_eff_audit.add_argument("--summary", required=True, type=Path, help="closure-batch summary CSV path.")
+    closure_eff_audit.add_argument("--output-dir", required=True, type=Path, help="Existing or new /tmp output directory.")
+    closure_eff_audit.add_argument("--g-time-m", default=0.8, type=float, help="Nolte G-time m parameter used for tp sensitivity.")
+    closure_eff_audit.add_argument(
+        "--tp-multipliers",
+        default="0.5,0.7,0.85,1.0,1.15,1.3",
+        help="Comma-separated tp multipliers for fixed-closure sensitivity.",
+    )
 
     grid = subparsers.add_parser(
         "pkn-grid-search",
@@ -966,6 +984,61 @@ def _run_closure_batch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_closure_efficiency_audit(args: argparse.Namespace) -> int:
+    summary = pd.read_csv(args.summary)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    audit = build_closure_g_time_efficiency_audit(summary)
+    audit_path = output_dir / "closure_g_time_efficiency_audit.csv"
+    audit.to_csv(audit_path, index=False)
+
+    tp_multipliers = parse_float_grid(args.tp_multipliers)
+    tp_sensitivity = build_tp_sensitivity_efficiency(
+        summary,
+        tp_multipliers=tp_multipliers,
+        g_time_m=args.g_time_m,
+    )
+    tp_path = output_dir / "tp_sensitivity_efficiency.csv"
+    tp_sensitivity.to_csv(tp_path, index=False)
+
+    print(f"closure_efficiency_audit_output_path={audit_path}")
+    print(f"closure_efficiency_audit_tp_sensitivity_path={tp_path}")
+    for col in [
+        "selected_closure_g_time",
+        "selected_closure_elapsed_seconds",
+        "tp_corrected_seconds",
+        "closure_elapsed_over_tp",
+        "eta_G",
+    ]:
+        if col not in audit.columns:
+            continue
+        values = pd.to_numeric(audit[col], errors="coerce")
+        finite = values[np.isfinite(values)]
+        if len(finite) == 0:
+            print(f"{col}_min=nan")
+            print(f"{col}_median=nan")
+            print(f"{col}_max=nan")
+            continue
+        print(f"{col}_min={float(np.nanmin(finite)):.12g}")
+        print(f"{col}_median={float(np.nanmedian(finite)):.12g}")
+        print(f"{col}_max={float(np.nanmax(finite)):.12g}")
+    if "selected_closure_g_time" in audit.columns:
+        g_c = pd.to_numeric(audit["selected_closure_g_time"], errors="coerce")
+        print(f"count_Gc_lt_0p2={int((g_c < 0.2).sum())}")
+        print(f"count_Gc_lt_0p5={int((g_c < 0.5).sum())}")
+    if "eta_G" in audit.columns:
+        eta = pd.to_numeric(audit["eta_G"], errors="coerce")
+        print(f"count_eta_G_lt_0p1={int((eta < 0.1).sum())}")
+        print(f"count_eta_G_lt_0p2={int((eta < 0.2).sum())}")
+    if "selected_closure_method" in audit.columns:
+        for method, count in audit["selected_closure_method"].astype(str).value_counts().items():
+            print(f"closure_method_{method}_count={int(count)}")
+    print("closure_efficiency_audit_formula_default_changed=False")
+    print("closure_efficiency_audit_is_final_physical_conclusion=False")
+    return 0
+
+
 def _run_pkn_grid_search(args: argparse.Namespace) -> int:
     grid_kwargs = {
         "closure_min_elapsed_seconds": parse_float_grid(args.closure_min_elapsed_grid),
@@ -1073,6 +1146,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "closure-batch":
         try:
             return _run_closure_batch(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "closure-efficiency-audit":
+        try:
+            return _run_closure_efficiency_audit(args)
         except ValueError as exc:
             parser.error(str(exc))
     if args.command == "pkn-grid-search":

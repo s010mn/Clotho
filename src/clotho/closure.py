@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -107,6 +107,241 @@ def reconcile_fluid_efficiencies(
         warning = "efficiency_difference_between_0p1_and_0p2"
     out["efficiency_reconciliation_warning"] = warning
     return out
+
+
+def classify_closure_g_time(selected_closure_g_time: float | None) -> str:
+    """按 Gc 大小给闭合候选分档；只用于审计，不改变 closure pick。"""
+    try:
+        g_c = float(selected_closure_g_time)
+    except (TypeError, ValueError):
+        return "invalid_Gc"
+    if not np.isfinite(g_c):
+        return "invalid_Gc"
+    if g_c < 0.2:
+        return "very_low_Gc_lt_0p2"
+    if g_c < 0.5:
+        return "low_Gc_0p2_to_0p5"
+    if g_c < 1.3333333333:
+        return "moderate_Gc_0p5_to_1p33"
+    return "high_Gc_ge_1p33"
+
+
+def classify_closure_elapsed_seconds(selected_closure_elapsed_seconds: float | None) -> str:
+    """按停泵后闭合候选时间分档；只用于早期瞬态风险审计。"""
+    try:
+        elapsed = float(selected_closure_elapsed_seconds)
+    except (TypeError, ValueError):
+        return "invalid_elapsed"
+    if not np.isfinite(elapsed):
+        return "invalid_elapsed"
+    if elapsed < 30.0:
+        return "very_early_lt_30s"
+    if elapsed < 60.0:
+        return "early_30_60s"
+    if elapsed < 300.0:
+        return "middle_60_300s"
+    return "late_gt_300s"
+
+
+def classify_closure_elapsed_over_tp(closure_elapsed_over_tp: float | None) -> str:
+    """按 closure elapsed/tp 分档；用于判断 Gc 低是否主要来自 tp 很大。"""
+    try:
+        ratio = float(closure_elapsed_over_tp)
+    except (TypeError, ValueError):
+        return "invalid_elapsed_over_tp"
+    if not np.isfinite(ratio):
+        return "invalid_elapsed_over_tp"
+    if ratio < 0.005:
+        return "tiny_lt_0p005"
+    if ratio < 0.02:
+        return "small_0p005_to_0p02"
+    if ratio < 0.1:
+        return "moderate_0p02_to_0p1"
+    return "large_ge_0p1"
+
+
+def compute_tp_scaled_g_time(
+    *,
+    selected_closure_elapsed_seconds: float | None,
+    tp_corrected_seconds: float | None,
+    tp_multiplier: float,
+    g_time_m: float,
+) -> dict[str, float]:
+    """只改变 tp 口径，重新计算同一 closure elapsed 对应的 G-time 和 eta_G。
+
+    这用于 Phase 5H.1 sensitivity：不重新选 closure，不改变默认公式。
+    """
+    out = {
+        "tp_seconds_scaled": np.nan,
+        "selected_closure_delta_scaled": np.nan,
+        "selected_closure_g_time_scaled": np.nan,
+        "g_function_efficiency_scaled": np.nan,
+    }
+    try:
+        elapsed = float(selected_closure_elapsed_seconds)
+        tp = float(tp_corrected_seconds)
+        multiplier = float(tp_multiplier)
+        m = float(g_time_m)
+    except (TypeError, ValueError):
+        return out
+    if not (
+        np.isfinite(elapsed)
+        and np.isfinite(tp)
+        and np.isfinite(multiplier)
+        and np.isfinite(m)
+        and elapsed >= 0.0
+        and tp > 0.0
+        and multiplier > 0.0
+    ):
+        return out
+    tp_scaled = tp * multiplier
+    delta = elapsed / tp_scaled
+    g_scaled = float(nolte_g_time(delta, m))
+    out["tp_seconds_scaled"] = float(tp_scaled)
+    out["selected_closure_delta_scaled"] = float(delta)
+    out["selected_closure_g_time_scaled"] = float(g_scaled)
+    out["g_function_efficiency_scaled"] = float(g_scaled / (g_scaled + 2.0)) if g_scaled > 0 else np.nan
+    return out
+
+
+def build_closure_g_time_efficiency_audit(summary: pd.DataFrame) -> pd.DataFrame:
+    """从 closure-batch summary 派生 Phase 5H.1 Gc/tp/efficiency 审计表。"""
+    out = summary.copy()
+    for col in [
+        "selected_closure_elapsed_seconds",
+        "selected_closure_g_time",
+        "g_function_closure_efficiency",
+        "tp_corrected_seconds",
+        "tp_legacy_volume_over_rate_seconds",
+        "selected_closure_pressure_mpa",
+        "pressure_at_shut_in_mpa",
+        "pkn_shutin_fluid_efficiency",
+        "efficiency_difference_pkn_minus_g_function",
+        "pkn_C_stage",
+        "stable_dP_dG_slope_mpa",
+        "stable_dP_dG_r2",
+        "stable_segment_start_elapsed_seconds",
+        "stable_segment_end_elapsed_seconds",
+    ]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        else:
+            out[col] = np.nan
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out["closure_elapsed_over_tp"] = (
+            out["selected_closure_elapsed_seconds"] / out["tp_corrected_seconds"]
+        )
+    out["closure_elapsed_over_tp"] = out["closure_elapsed_over_tp"].where(
+        np.isfinite(out["closure_elapsed_over_tp"]), np.nan
+    )
+    if "tp_correction_ratio" in out.columns:
+        out["tp_correction_ratio"] = pd.to_numeric(out["tp_correction_ratio"], errors="coerce")
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out["tp_correction_ratio"] = (
+                out["tp_corrected_seconds"] / out["tp_legacy_volume_over_rate_seconds"]
+            )
+        out["tp_correction_ratio"] = out["tp_correction_ratio"].where(
+            np.isfinite(out["tp_correction_ratio"]), np.nan
+        )
+    out["Gc_implied_by_g_function_efficiency"] = out["selected_closure_g_time"]
+    out["eta_G"] = out["g_function_closure_efficiency"]
+    out["Gc_for_20pct_efficiency"] = 0.5
+    out["Gc_for_40pct_efficiency"] = 1.3333333333
+    out["closure_Gc_class"] = out["selected_closure_g_time"].map(classify_closure_g_time)
+    out["closure_elapsed_class"] = out["selected_closure_elapsed_seconds"].map(
+        classify_closure_elapsed_seconds
+    )
+    out["closure_elapsed_over_tp_class"] = out["closure_elapsed_over_tp"].map(
+        classify_closure_elapsed_over_tp
+    )
+
+    # 有些历史 CSV 没有这些可选列；补空列让审计输出 schema 稳定。
+    optional_defaults = {
+        "early_transient_risk": False,
+        "water_hammer_plausibility_note": "",
+        "pkn_fluid_efficiency_warning": "",
+        "efficiency_reconciliation_warning": "",
+    }
+    for col, default in optional_defaults.items():
+        if col not in out.columns:
+            out[col] = default
+
+    columns = [
+        "stage",
+        "selected_closure_method",
+        "selected_closure_status",
+        "selected_closure_elapsed_seconds",
+        "selected_closure_g_time",
+        "g_function_closure_efficiency",
+        "tp_corrected_seconds",
+        "tp_legacy_volume_over_rate_seconds",
+        "tp_correction_ratio",
+        "closure_elapsed_over_tp",
+        "selected_closure_pressure_mpa",
+        "pressure_at_shut_in_mpa",
+        "pkn_shutin_fluid_efficiency",
+        "efficiency_difference_pkn_minus_g_function",
+        "pkn_C_stage",
+        "stable_dP_dG_slope_mpa",
+        "stable_dP_dG_r2",
+        "stable_segment_start_elapsed_seconds",
+        "stable_segment_end_elapsed_seconds",
+        "early_transient_risk",
+        "water_hammer_plausibility_note",
+        "pkn_fluid_efficiency_warning",
+        "efficiency_reconciliation_warning",
+        "Gc_implied_by_g_function_efficiency",
+        "eta_G",
+        "Gc_for_20pct_efficiency",
+        "Gc_for_40pct_efficiency",
+        "closure_Gc_class",
+        "closure_elapsed_class",
+        "closure_elapsed_over_tp_class",
+    ]
+    return out[[c for c in columns if c in out.columns]].copy()
+
+
+def build_tp_sensitivity_efficiency(
+    summary: pd.DataFrame,
+    *,
+    tp_multipliers: Sequence[float],
+    g_time_m: float = 0.8,
+) -> pd.DataFrame:
+    """对固定 closure elapsed 做 tp multiplier sensitivity，不重新选 closure。"""
+    rows: list[dict[str, Any]] = []
+    for _, row in summary.iterrows():
+        for multiplier in tp_multipliers:
+            scaled = compute_tp_scaled_g_time(
+                selected_closure_elapsed_seconds=row.get("selected_closure_elapsed_seconds"),
+                tp_corrected_seconds=row.get("tp_corrected_seconds"),
+                tp_multiplier=float(multiplier),
+                g_time_m=g_time_m,
+            )
+            pkn_eff = row.get("pkn_shutin_fluid_efficiency", np.nan)
+            try:
+                pkn_eff_float = float(pkn_eff)
+            except (TypeError, ValueError):
+                pkn_eff_float = np.nan
+            g_eff = scaled["g_function_efficiency_scaled"]
+            rows.append({
+                "stage": row.get("stage"),
+                "tp_multiplier": float(multiplier),
+                "selected_closure_elapsed_seconds": row.get(
+                    "selected_closure_elapsed_seconds", np.nan
+                ),
+                "tp_seconds_scaled": scaled["tp_seconds_scaled"],
+                "selected_closure_g_time_scaled": scaled["selected_closure_g_time_scaled"],
+                "g_function_efficiency_scaled": g_eff,
+                "pkn_shutin_fluid_efficiency": pkn_eff_float,
+                "efficiency_difference_scaled": (
+                    pkn_eff_float - g_eff
+                    if np.isfinite(pkn_eff_float) and np.isfinite(g_eff)
+                    else np.nan
+                ),
+            })
+    return pd.DataFrame.from_records(rows)
 
 
 def compute_C_multiplier_to_fluid_efficiency(

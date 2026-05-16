@@ -477,3 +477,83 @@ Phase 5H reduced smoke grid（`/tmp/gfunction-ref-audit-phase5h/grid/`，4 cases
 - storage vs microseismic Pearson = -0.228；
 - leakoff/nonstorage vs EM Pearson = +0.453；
 - 4-case smoke 中效率校准后没有让 physical storage correlation 改善为正相关。
+
+## Phase 5H.1：closure Gc 与压裂液效率低值原因
+
+Phase 5H.1 把 Phase 5H 的 `fluid efficiency reconciliation` 当成实现阶段验收，
+但不把它写成最终物理结论。前提仍然是：PKN efficiency 与 G-function efficiency
+大体一致，二者都低，因此不能简单说 `C_stage` 过大，也不能把 20% 当硬目标强行校准。
+核心问题转向 selected closure `G_c` 是否过低，以及 `tp` / G-time 定义是否兼容。
+
+代码审计显示当前 Clotho 使用：
+
+```text
+nolte_g_time(delta, m, delta0=0.0)
+G(delta,m;delta0) = 4/pi * [g(delta,m) - g(delta0,m)]
+```
+
+也就是说当前 `selected_closure_g_time` 是从 shut-in `delta=0` 开始、带 `4/pi`
+归一化系数的 post-shut-in offset G。Phase 5H 使用的
+`eta_G = G_c / (G_c + 2)` 继续保留为诊断交叉检查，但公式资料中的 `G_c`
+是否与这个 exact Nolte implementation 的数值尺度完全一致，尚未被证明。
+
+> `η_G=G_c/(G_c+2)` is used as a diagnostic cross-check under the current
+> G-time definition; formula compatibility with this exact Nolte implementation
+> remains a TODO.
+
+Baseline Gc/tp 审计输出在 `/tmp/gfunction-ref-audit-phase5h1/`，未提交 CSV/PNG。
+
+```text
+selected_closure_g_time: min=0.015, median=0.112, max=0.196
+g_function_closure_efficiency: min=0.008, median=0.053, max=0.089
+selected_closure_elapsed_seconds: min=70, median=614, max=941
+tp_corrected_seconds: min=8521, median=10337.5, max=28745
+closure_elapsed_over_tp: min=0.0068, median=0.0550, max=0.1007
+count Gc < 0.2: 28
+count Gc < 0.5: 28
+count eta_G < 0.1: 28
+count eta_G < 0.2: 28
+closure methods: barree=27, mcclure=1, none=2
+```
+
+注意：多数 stage 的 closure elapsed 并不是小于 30 s 的瞬时点，而是 70-941 s；
+但相对于 `tp_corrected_seconds` 仍然很小，所以 `G_c` 全部落在 `<0.2`。在多数
+stage `G_c < 0.2` 的前提下，`eta_G=G_c/(G_c+2)` 自然会非常低。
+
+tp sensitivity 固定 closure elapsed，不重新选 closure：
+
+```text
+tp multiplier: 0.50 -> median eta_G=0.096
+tp multiplier: 0.70 -> median eta_G=0.072
+tp multiplier: 0.85 -> median eta_G=0.061
+tp multiplier: 1.00 -> median eta_G=0.053
+tp multiplier: 1.15 -> median eta_G=0.047
+tp multiplier: 1.30 -> median eta_G=0.042
+```
+
+把 `tp` 减半会明显提高 `eta_G`，但 median 仍低于 0.1，说明低 efficiency 不只是
+`tp_corrected_seconds` 偏大的单一问题。stage 1 的 `tp_corrected_seconds=10417 s`，
+`tp_legacy_volume_over_rate_seconds=9568 s`，`tp_correction_ratio=1.089`，仍接近
+旧 PPT 中 153 min vs 228 min 问题的“修正后更合理但仍为长注入时间”口径。
+
+closure_min_elapsed sensitivity 不改变 PKN 公式、不改 `I_F`、不改 H_w 默认：
+
+```text
+closure_min_elapsed=15: computed=28, barree=27, mcclure=1, median Gc=0.112, median eta_G=0.053, median PKN eta=0.079
+closure_min_elapsed=30: computed=28, barree=27, mcclure=1, median Gc=0.110, median eta_G=0.052, median PKN eta=0.079
+closure_min_elapsed=60: computed=28, barree=28, mcclure=0, median Gc=0.110, median eta_G=0.052, median PKN eta=0.083
+closure_min_elapsed=120: computed=28, barree=28, mcclure=0, median Gc=0.113, median eta_G=0.054, median PKN eta=0.086
+```
+
+延后 closure search 起点到 60 或 120 s 没有显著抬高 `G_c` / efficiency，也没有让
+computed count 下降。因此，早期 0-60 s 水锤/瞬态并不是 baseline 低 efficiency 的
+唯一解释。仍需人工复核 closure pick、G-time definition 和 `tp` 起裂时刻。
+
+本阶段解释边界：
+
+- PKN efficiency 与 G-function efficiency 大体一致，且二者都低；
+- 当前 baseline 不支持把 `C_stage` 当作唯一主嫌；
+- selected `G_c` 全部 `<0.2`，是低 `eta_G` 的直接数值原因；
+- 低 efficiency 不能写成“已经证明高漏失”；
+- G-function efficiency 不是唯一真值；
+- 后续应做人工 closure pick 复核、G-time 公式口径复核、tp 起裂时刻复核，而不是强行校准到 20%。

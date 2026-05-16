@@ -13,10 +13,14 @@ from clotho.closure import (
     K_lp,
     PHYSICAL_PKN_IF,
     build_observation_correlation_table,
+    classify_closure_elapsed_over_tp,
+    classify_closure_elapsed_seconds,
+    classify_closure_g_time,
     compute_C_multiplier_to_fluid_efficiency,
     compute_flow_allocation_eta,
     compute_g_function_closure_efficiency,
     compute_physical_leakoff_C,
+    compute_tp_scaled_g_time,
     reconcile_fluid_efficiencies,
     compute_stress_shadow,
     effective_volume_correction,
@@ -144,6 +148,76 @@ class TestFractureInitiation:
             volume_column="total_volume",
         )
         assert tp > 0
+
+
+class TestClosureEfficiencyAuditHelpers:
+    @pytest.mark.parametrize(
+        ("g_time", "expected"),
+        [
+            (0.1, "very_low_Gc_lt_0p2"),
+            (0.3, "low_Gc_0p2_to_0p5"),
+            (0.8, "moderate_Gc_0p5_to_1p33"),
+            (2.0, "high_Gc_ge_1p33"),
+        ],
+    )
+    def test_closure_g_time_class_thresholds(self, g_time, expected):
+        assert classify_closure_g_time(g_time) == expected
+
+    @pytest.mark.parametrize(
+        ("elapsed", "expected"),
+        [
+            (20.0, "very_early_lt_30s"),
+            (45.0, "early_30_60s"),
+            (120.0, "middle_60_300s"),
+            (600.0, "late_gt_300s"),
+        ],
+    )
+    def test_closure_elapsed_class_thresholds(self, elapsed, expected):
+        assert classify_closure_elapsed_seconds(elapsed) == expected
+
+    @pytest.mark.parametrize(
+        ("ratio", "expected"),
+        [
+            (0.002, "tiny_lt_0p005"),
+            (0.01, "small_0p005_to_0p02"),
+            (0.05, "moderate_0p02_to_0p1"),
+            (0.2, "large_ge_0p1"),
+        ],
+    )
+    def test_closure_elapsed_over_tp_class_thresholds(self, ratio, expected):
+        assert classify_closure_elapsed_over_tp(ratio) == expected
+
+    def test_tp_sensitivity_recalculates_delta_and_g_time(self):
+        base = compute_tp_scaled_g_time(
+            selected_closure_elapsed_seconds=100.0,
+            tp_corrected_seconds=1000.0,
+            tp_multiplier=1.0,
+            g_time_m=0.8,
+        )
+        scaled = compute_tp_scaled_g_time(
+            selected_closure_elapsed_seconds=100.0,
+            tp_corrected_seconds=1000.0,
+            tp_multiplier=0.5,
+            g_time_m=0.8,
+        )
+
+        assert base["selected_closure_delta_scaled"] == pytest.approx(0.1)
+        assert scaled["selected_closure_delta_scaled"] == pytest.approx(0.2)
+        assert scaled["selected_closure_g_time_scaled"] == pytest.approx(
+            nolte_g_time(0.2, 0.8)
+        )
+        assert scaled["selected_closure_g_time_scaled"] > base["selected_closure_g_time_scaled"]
+
+    @pytest.mark.parametrize(
+        ("g_time", "expected_efficiency"),
+        [
+            (0.5, 0.2),
+            (1.333333333, 0.4),
+        ],
+    )
+    def test_eta_g_formula_reference_values(self, g_time, expected_efficiency):
+        result = compute_g_function_closure_efficiency(g_time)
+        assert result["g_function_closure_efficiency"] == pytest.approx(expected_efficiency)
 
 
 class TestBarreeTangentClosure:

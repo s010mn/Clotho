@@ -71,6 +71,10 @@ stage 参数表
   - I_F = 0.722464726919 不进入搜索空间；H_w 默认 50 m，可用
     `--pkn-Hw-grid` 做 30-60 m sensitivity；
   - 结果是 sensitivity audit，不是最终物理解释。
+- closure G-time / efficiency root-cause audit（Phase 5H.1, `closure-efficiency-audit`）：
+  - 从已有 `closure-batch` summary 派生 `closure_g_time_efficiency_audit.csv`；
+  - 对固定 closure elapsed 做 tp multiplier sensitivity；
+  - 只做诊断交叉检查，不修改 PKN、`I_F`、H_w 默认或 closure pick。
 
 ## 当前不做
 
@@ -302,6 +306,19 @@ uv run python -m clotho closure-batch \
 - 相关性输出只是统计相关，不是因果验证；
 - 严谨化 TODO 见 `TODO.md`；
 - 输出 parent directory 必须存在，不自动 mkdir。
+
+Phase 5H.1 closure efficiency audit 示例：
+
+```bash
+uv run python -m clotho closure-efficiency-audit \
+  --summary /tmp/closure_summary.csv \
+  --output-dir /tmp/gfunction-ref-audit-phase5h1 \
+  --g-time-m 0.8 \
+  --tp-multipliers 0.5,0.7,0.85,1.0,1.15,1.3
+```
+
+说明：`eta_G = G_c / (G_c + 2)` 只作为当前 G-time 定义下的 diagnostic cross-check；
+公式口径和具体 Nolte 实现是否完全兼容仍需人工复核，不能把低效率写成最终物理事实。
 
 ## 数据边界
 
