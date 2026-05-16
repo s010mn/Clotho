@@ -84,6 +84,11 @@ stage 参数表
   - 计算 target `G_c` 进入当前 valid window 所需的 `tp` multiplier；
   - 用二分求解，不做线性近似；
   - 只做 reachability audit，不修改默认 `tp`、closure pick 或公式。
+- fracture initiation timing audit（Phase 5K, `fracture-initiation-audit`）：
+  - 对比 pressure peak / extension stable / rate step 三套起裂候选规则；
+  - 输出每套规则的 `tp` multiplier；
+  - 与 Phase 5J required multiplier 对照；
+  - 只做人工复核清单，不修改默认 `tp`。
 
 ## 当前不做
 
@@ -371,6 +376,29 @@ uv run python -m clotho closure-tp-reachability-audit \
 当前值的多少倍才可达”。如果 Phase 5H.1 summary 缺少 `max_available_Gc`，CLI 会
 在存在时自动读取 `/tmp/gfunction-ref-audit-phase5i/efficiency_prior_stage_table.csv`
 补充。它不证明 `tp` 错误，也不把 20% efficiency 当作硬目标。
+
+Phase 5K fracture initiation timing audit 示例：
+
+```bash
+uv run python -m clotho fracture-initiation-audit \
+  --stage-params /path/to/well/stage_params.csv \
+  --well-root /path/to/well \
+  --manifest /tmp/manifest.csv \
+  --tp-reachability /tmp/gfunction-ref-audit-phase5j/tp_reachability_audit.csv \
+  --output /tmp/gfunction-ref-audit-phase5k/fracture_initiation_tp_audit.csv \
+  --summary-output /tmp/gfunction-ref-audit-phase5k/fracture_initiation_tp_summary.csv \
+  --volume-column total_volume \
+  --rate-time-unit minute \
+  --min-rate 10 \
+  --design-rate 18 \
+  --rate-step-fraction 0.8 \
+  --pressure-source estimated-bottomhole \
+  --stable-pressure-window-points 20 \
+  --stable-pressure-slope-threshold 0.05
+```
+
+说明：三套起裂规则只是候选规则。输出用于人工复核 pressure / rate 曲线，不会自动
+替换当前默认 `tp`。
 
 ## 数据边界
 

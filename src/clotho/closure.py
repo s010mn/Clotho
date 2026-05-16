@@ -599,6 +599,491 @@ def build_tp_reachability_audit(
     return pd.DataFrame.from_records(rows)
 
 
+def _continuous_seconds_for_curve(curve: pd.DataFrame) -> np.ndarray:
+    seconds_of_day = curve["seconds_of_day"].to_numpy(dtype=float)
+    continuous = seconds_of_day.copy()
+    offset = 0.0
+    for i in range(1, len(continuous)):
+        if seconds_of_day[i] + offset < continuous[i - 1]:
+            offset += 24.0 * 3600.0
+        continuous[i] = seconds_of_day[i] + offset
+    return continuous
+
+
+def _failed_breakdown_peak(status: str) -> dict[str, Any]:
+    return {
+        "tp_rule_breakdown_peak_seconds": np.nan,
+        "tp_multiplier_breakdown_peak": np.nan,
+        "initiation_index_breakdown_peak": np.nan,
+        "initiation_time_breakdown_peak": "",
+        "initiation_pressure_breakdown_peak_mpa": np.nan,
+        "initiation_rule_breakdown_peak_status": status,
+    }
+
+
+def _failed_extension_stable(status: str) -> dict[str, Any]:
+    return {
+        "tp_rule_extension_stable_seconds": np.nan,
+        "tp_multiplier_extension_stable": np.nan,
+        "initiation_index_extension_stable": np.nan,
+        "initiation_time_extension_stable": "",
+        "initiation_pressure_extension_stable_mpa": np.nan,
+        "extension_stable_window_slope": np.nan,
+        "extension_stable_window_r2": np.nan,
+        "initiation_rule_extension_stable_status": status,
+    }
+
+
+def _failed_rate_step(status: str) -> dict[str, Any]:
+    return {
+        "tp_rule_rate_step_seconds": np.nan,
+        "tp_multiplier_rate_step": np.nan,
+        "initiation_index_rate_step": np.nan,
+        "initiation_time_rate_step": "",
+        "rate_at_rate_step": np.nan,
+        "initiation_rule_rate_step_status": status,
+    }
+
+
+def compute_rule_tp_multiplier(
+    *,
+    rule_tp_seconds: float | None,
+    current_tp_seconds: float | None,
+) -> float:
+    try:
+        rule_tp = float(rule_tp_seconds)
+        current_tp = float(current_tp_seconds)
+    except (TypeError, ValueError):
+        return np.nan
+    if not np.isfinite(rule_tp) or not np.isfinite(current_tp) or rule_tp <= 0 or current_tp <= 0:
+        return np.nan
+    return float(rule_tp / current_tp)
+
+
+def pick_breakdown_pressure_peak_initiation(
+    curve: pd.DataFrame,
+    *,
+    shut_in_index: int,
+    pressure_column: str,
+    min_rate: float,
+) -> dict[str, Any]:
+    """规则 A：停泵前 rate>=min_rate 泵注段的压力峰值。"""
+    if pressure_column not in curve.columns:
+        return _failed_breakdown_peak("pressure_column_missing")
+    pumping = curve.iloc[:shut_in_index].copy()
+    mask = (
+        pd.to_numeric(pumping["rate"], errors="coerce").to_numpy(dtype=float) >= float(min_rate)
+    )
+    pressure = pd.to_numeric(pumping[pressure_column], errors="coerce").to_numpy(dtype=float)
+    mask = mask & np.isfinite(pressure)
+    if not mask.any():
+        return _failed_breakdown_peak("not_found")
+    local_idx = int(np.argmax(np.where(mask, pressure, -np.inf)))
+    return {
+        "tp_rule_breakdown_peak_seconds": np.nan,
+        "tp_multiplier_breakdown_peak": np.nan,
+        "initiation_index_breakdown_peak": local_idx,
+        "initiation_time_breakdown_peak": str(curve.iloc[local_idx]["time_text"]),
+        "initiation_pressure_breakdown_peak_mpa": float(pressure[local_idx]),
+        "initiation_rule_breakdown_peak_status": "ok",
+    }
+
+
+def _linear_slope_r2(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    if len(x) < 2 or len(y) < 2:
+        return np.nan, np.nan
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        return np.nan, np.nan
+    if np.nanmax(x) <= np.nanmin(x):
+        return np.nan, np.nan
+    slope, intercept = np.polyfit(x, y, deg=1)
+    pred = slope * x + intercept
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+    return float(slope), float(r2)
+
+
+def pick_extension_stable_initiation(
+    curve: pd.DataFrame,
+    *,
+    shut_in_index: int,
+    pressure_column: str,
+    min_rate: float,
+    window_points: int = 20,
+    slope_threshold: float = 0.05,
+) -> dict[str, Any]:
+    """规则 B：压力峰值后进入扩展压力平台的第一个稳定窗口。"""
+    if pressure_column not in curve.columns:
+        return _failed_extension_stable("pressure_column_missing")
+    if window_points < 2:
+        raise ValueError("stable pressure window points must be >= 2")
+    peak = pick_breakdown_pressure_peak_initiation(
+        curve,
+        shut_in_index=shut_in_index,
+        pressure_column=pressure_column,
+        min_rate=min_rate,
+    )
+    if peak["initiation_rule_breakdown_peak_status"] != "ok":
+        return _failed_extension_stable("pressure_peak_not_found")
+    peak_idx = int(peak["initiation_index_breakdown_peak"])
+    pressure = pd.to_numeric(curve[pressure_column], errors="coerce").to_numpy(dtype=float)
+    rate = pd.to_numeric(curve["rate"], errors="coerce").to_numpy(dtype=float)
+    seconds = _continuous_seconds_for_curve(curve)
+    last_start = shut_in_index - int(window_points)
+    if last_start <= peak_idx:
+        return _failed_extension_stable("not_found")
+    for start in range(peak_idx + 1, last_start + 1):
+        end = start + int(window_points)
+        p = pressure[start:end]
+        t = seconds[start:end]
+        r = rate[start:end]
+        if len(p) < window_points:
+            continue
+        if not np.all(np.isfinite(p)) or not np.all(np.isfinite(t)) or not np.all(np.isfinite(r)):
+            continue
+        if not np.all(r >= float(min_rate)):
+            continue
+        slope, r2 = _linear_slope_r2(t - t[0], p)
+        if not np.isfinite(slope):
+            continue
+        max_step = float(np.nanmax(np.abs(np.diff(p)))) if len(p) > 1 else np.nan
+        if abs(slope) <= float(slope_threshold) and max_step <= float(slope_threshold):
+            return {
+                "tp_rule_extension_stable_seconds": np.nan,
+                "tp_multiplier_extension_stable": np.nan,
+                "initiation_index_extension_stable": int(start),
+                "initiation_time_extension_stable": str(curve.iloc[start]["time_text"]),
+                "initiation_pressure_extension_stable_mpa": float(pressure[start]),
+                "extension_stable_window_slope": float(slope),
+                "extension_stable_window_r2": float(r2) if np.isfinite(r2) else np.nan,
+                "initiation_rule_extension_stable_status": "ok",
+            }
+    return _failed_extension_stable("not_found")
+
+
+def pick_rate_step_initiation(
+    curve: pd.DataFrame,
+    *,
+    shut_in_index: int,
+    design_rate: float,
+    rate_step_fraction: float = 0.8,
+) -> dict[str, Any]:
+    """规则 C：达到设计排量比例的第一个点。"""
+    try:
+        threshold = float(design_rate) * float(rate_step_fraction)
+    except (TypeError, ValueError):
+        return _failed_rate_step("invalid_design_rate")
+    if not np.isfinite(threshold) or threshold <= 0:
+        return _failed_rate_step("invalid_design_rate")
+    rate = pd.to_numeric(curve["rate"], errors="coerce").to_numpy(dtype=float)
+    mask = np.isfinite(rate[:shut_in_index]) & (rate[:shut_in_index] >= threshold)
+    if not mask.any():
+        return _failed_rate_step("not_found")
+    idx = int(np.flatnonzero(mask)[0])
+    return {
+        "tp_rule_rate_step_seconds": np.nan,
+        "tp_multiplier_rate_step": np.nan,
+        "initiation_index_rate_step": idx,
+        "initiation_time_rate_step": str(curve.iloc[idx]["time_text"]),
+        "rate_at_rate_step": float(rate[idx]),
+        "initiation_rule_rate_step_status": "ok",
+    }
+
+
+def compute_fracture_initiation_rule_reachability(
+    *,
+    rule_multiplier: float | None,
+    required_multiplier: float | None,
+) -> str:
+    try:
+        rule = float(rule_multiplier)
+    except (TypeError, ValueError):
+        return "rule_missing"
+    try:
+        required = float(required_multiplier)
+    except (TypeError, ValueError):
+        return "target_missing"
+    if not np.isfinite(required):
+        return "target_missing"
+    if not np.isfinite(rule):
+        return "rule_missing"
+    if rule <= required:
+        if rule >= 0.6:
+            return "reaches_target_with_plausible_rule"
+        return "reaches_target_but_rule_extreme"
+    return "does_not_reach_target"
+
+
+def _rule_multiplier_class(rule_multiplier: float | None) -> str:
+    try:
+        value = float(rule_multiplier)
+    except (TypeError, ValueError):
+        return "missing"
+    if not np.isfinite(value):
+        return "missing"
+    if value >= 0.6:
+        return "plausible"
+    if value >= 0.3:
+        return "aggressive"
+    return "extreme"
+
+
+def recommend_tp_review_priority(row: pd.Series) -> str:
+    multipliers = pd.to_numeric(pd.Series([
+        row.get("tp_multiplier_breakdown_peak"),
+        row.get("tp_multiplier_extension_stable"),
+        row.get("tp_multiplier_rate_step"),
+    ]), errors="coerce").dropna()
+    if len(multipliers) == 0:
+        return "high"
+    if len(multipliers) >= 2 and float(multipliers.max() - multipliers.min()) > 0.4:
+        return "high"
+    eta20_cols = [
+        "target_0p20_reached_by_breakdown_peak",
+        "target_0p20_reached_by_extension_stable",
+        "target_0p20_reached_by_rate_step",
+    ]
+    eta20_reach = [str(row.get(col, "")) for col in eta20_cols]
+    if any(value.startswith("reaches_target") for value in eta20_reach):
+        reaching = []
+        for rule in ["breakdown_peak", "extension_stable", "rate_step"]:
+            if str(row.get(f"target_0p20_reached_by_{rule}", "")).startswith("reaches_target"):
+                reaching.append(row.get(f"tp_multiplier_{rule}"))
+        if reaching and all(_rule_multiplier_class(value) == "extreme" for value in reaching):
+            return "high"
+    eta10_cols = [
+        "target_0p10_reached_by_breakdown_peak",
+        "target_0p10_reached_by_extension_stable",
+        "target_0p10_reached_by_rate_step",
+    ]
+    eta10_values = [str(row.get(col, "")) for col in eta10_cols]
+    eta10_plausible = any(value == "reaches_target_with_plausible_rule" for value in eta10_values)
+    eta20_reached = any(value.startswith("reaches_target") for value in eta20_reach)
+    b = row.get("tp_multiplier_breakdown_peak")
+    e = row.get("tp_multiplier_extension_stable")
+    if np.isfinite(pd.to_numeric(pd.Series([b]), errors="coerce").iloc[0]) and np.isfinite(
+        pd.to_numeric(pd.Series([e]), errors="coerce").iloc[0]
+    ):
+        if abs(float(b) - float(e)) > 0.2:
+            return "medium"
+    if eta10_plausible and not eta20_reached:
+        return "medium"
+    if eta10_plausible:
+        return "low"
+    return "medium"
+
+
+def _apply_rule_tp(
+    rule: dict[str, Any],
+    *,
+    rule_name: str,
+    curve: pd.DataFrame,
+    shut_in_index: int,
+    current_tp_seconds: float,
+) -> dict[str, Any]:
+    index_key = f"initiation_index_{rule_name}"
+    tp_key = f"tp_rule_{rule_name}_seconds"
+    mult_key = f"tp_multiplier_{rule_name}"
+    status_key = f"initiation_rule_{rule_name}_status"
+    if rule.get(status_key) != "ok":
+        return rule
+    idx = int(rule[index_key])
+    seconds = _continuous_seconds_for_curve(curve)
+    tp_rule = float(seconds[shut_in_index] - seconds[idx])
+    if not np.isfinite(tp_rule) or tp_rule <= 0:
+        rule[status_key] = "failed"
+        rule[tp_key] = np.nan
+        rule[mult_key] = np.nan
+        return rule
+    rule[tp_key] = tp_rule
+    rule[mult_key] = compute_rule_tp_multiplier(
+        rule_tp_seconds=tp_rule,
+        current_tp_seconds=current_tp_seconds,
+    )
+    return rule
+
+
+def _required_multiplier_lookup(tp_reachability: pd.DataFrame) -> dict[tuple[int, str], float]:
+    lookup: dict[tuple[int, str], float] = {}
+    if tp_reachability.empty:
+        return lookup
+    for _, row in tp_reachability.iterrows():
+        try:
+            stage = int(row["stage"])
+            eta = float(row["target_eta"])
+            required = float(row["required_tp_multiplier"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        lookup[(stage, f"{eta:.2f}")] = required
+    return lookup
+
+
+def _target_col_suffix(eta: float) -> str:
+    return f"{eta:.2f}".replace(".", "p")
+
+
+def _build_initiation_summary(audit: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for rule in ["breakdown_peak", "extension_stable", "rate_step"]:
+        mult_col = f"tp_multiplier_{rule}"
+        values = pd.to_numeric(audit.get(mult_col, pd.Series(dtype=float)), errors="coerce")
+        finite = values.dropna()
+        row: dict[str, Any] = {
+            "rule": rule,
+            "valid_stage_count": int(len(finite)),
+            "multiplier_min": float(finite.min()) if len(finite) else np.nan,
+            "multiplier_median": float(finite.median()) if len(finite) else np.nan,
+            "multiplier_max": float(finite.max()) if len(finite) else np.nan,
+            "eta_0p10_reachable_count": int(
+                audit.get(f"target_0p10_reached_by_{rule}", pd.Series(dtype=str))
+                .astype(str)
+                .str.startswith("reaches_target")
+                .sum()
+            ),
+            "eta_0p20_reachable_count": int(
+                audit.get(f"target_0p20_reached_by_{rule}", pd.Series(dtype=str))
+                .astype(str)
+                .str.startswith("reaches_target")
+                .sum()
+            ),
+            "plausible_count": int((finite >= 0.6).sum()),
+            "aggressive_count": int(((finite >= 0.3) & (finite < 0.6)).sum()),
+            "extreme_count": int((finite < 0.3).sum()),
+        }
+        rows.append(row)
+    return pd.DataFrame.from_records(rows)
+
+
+def build_fracture_initiation_tp_audit(
+    *,
+    stage_params_path: str | Path,
+    well_root: str | Path,
+    manifest_path: str | Path,
+    tp_reachability_path: str | Path,
+    volume_column: str = "total_volume",
+    rate_time_unit: str = "minute",
+    min_rate: float = 10.0,
+    design_rate: float | None = 18.0,
+    rate_step_fraction: float = 0.8,
+    pressure_source: str = "estimated-bottomhole",
+    stable_pressure_window_points: int = 20,
+    stable_pressure_slope_threshold: float = 0.05,
+    well: str | None = None,
+) -> dict[str, pd.DataFrame]:
+    """运行三套起裂候选规则的 tp 审计；不改变默认 tp。"""
+    stages_info = read_stage_params(stage_params_path)
+    manifest = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
+    missing_cols = sorted(_REQUIRED_MANIFEST_COLUMNS - set(manifest.columns))
+    if missing_cols:
+        raise ValueError(f"manifest 缺少必填列: {', '.join(missing_cols)}")
+    tp_reachability = pd.read_csv(tp_reachability_path)
+    required_lookup = _required_multiplier_lookup(tp_reachability)
+
+    rows: list[dict[str, Any]] = []
+    for _, mrow in manifest.iterrows():
+        stage_num = int(mrow["stage"])
+        stage_info = _find_stage(stages_info, stage_num, well)
+        curve = read_stage_curve(Path(well_root) / stage_info.data_file)
+        shut_in_index = find_shut_in_index(curve, stage_info.shut_in_time)
+        tp_legacy = volume_over_max_rate_duration_seconds(
+            curve,
+            shut_in_index,
+            max_sustained_rate=float(mrow["max_sustained_rate"]),
+            rate_time_unit=rate_time_unit,
+            volume_column=volume_column,
+        )
+        pressure_col = "wellhead_pressure_mpa"
+        curve_for_pressure = curve
+        if pressure_source == "estimated-bottomhole" and stage_info.liquid_column_pressure_mpa is not None:
+            curve_for_pressure = add_estimated_bottomhole_pressure(curve, stage_info)
+            pressure_col = "estimated_bottomhole_pressure_mpa"
+
+        initiation = pick_fracture_initiation_candidate(
+            curve_for_pressure,
+            shut_in_index,
+            pressure_column=pressure_col,
+            minimum_stress_prior_mpa=stage_info.minimum_stress_prior_mpa,
+            min_rate=min_rate,
+        )
+        current_tp = (
+            float(initiation["tp_corrected_seconds"])
+            if initiation["fracture_initiation_status"] == "ok"
+            and np.isfinite(initiation["tp_corrected_seconds"])
+            and initiation["tp_corrected_seconds"] > 0
+            else float(tp_legacy)
+        )
+        stage_design_rate = (
+            float(design_rate)
+            if design_rate is not None and np.isfinite(float(design_rate))
+            else float(mrow["max_sustained_rate"])
+        )
+
+        breakdown = _apply_rule_tp(
+            pick_breakdown_pressure_peak_initiation(
+                curve_for_pressure,
+                shut_in_index=shut_in_index,
+                pressure_column=pressure_col,
+                min_rate=min_rate,
+            ),
+            rule_name="breakdown_peak",
+            curve=curve_for_pressure,
+            shut_in_index=shut_in_index,
+            current_tp_seconds=current_tp,
+        )
+        extension = _apply_rule_tp(
+            pick_extension_stable_initiation(
+                curve_for_pressure,
+                shut_in_index=shut_in_index,
+                pressure_column=pressure_col,
+                min_rate=min_rate,
+                window_points=stable_pressure_window_points,
+                slope_threshold=stable_pressure_slope_threshold,
+            ),
+            rule_name="extension_stable",
+            curve=curve_for_pressure,
+            shut_in_index=shut_in_index,
+            current_tp_seconds=current_tp,
+        )
+        rate_step = _apply_rule_tp(
+            pick_rate_step_initiation(
+                curve_for_pressure,
+                shut_in_index=shut_in_index,
+                design_rate=stage_design_rate,
+                rate_step_fraction=rate_step_fraction,
+            ),
+            rule_name="rate_step",
+            curve=curve_for_pressure,
+            shut_in_index=shut_in_index,
+            current_tp_seconds=current_tp,
+        )
+
+        out: dict[str, Any] = {
+            "stage": stage_num,
+            "shut_in_time": stage_info.shut_in_time,
+            "tp_current_seconds": current_tp,
+            "tp_legacy_volume_over_rate_seconds": float(tp_legacy),
+            **breakdown,
+            **extension,
+            **rate_step,
+        }
+        for eta in [0.10, 0.15, 0.20]:
+            suffix = _target_col_suffix(eta)
+            required = required_lookup.get((stage_num, f"{eta:.2f}"), np.nan)
+            out[f"required_tp_multiplier_eta_{suffix}"] = required
+            for rule in ["breakdown_peak", "extension_stable", "rate_step"]:
+                out[f"target_{suffix}_reached_by_{rule}"] = compute_fracture_initiation_rule_reachability(
+                    rule_multiplier=out.get(f"tp_multiplier_{rule}"),
+                    required_multiplier=required,
+                )
+        out["recommended_tp_review_priority"] = recommend_tp_review_priority(pd.Series(out))
+        rows.append(out)
+
+    audit = pd.DataFrame.from_records(rows)
+    summary = _build_initiation_summary(audit)
+    return {"audit": audit, "summary": summary}
+
+
 def select_target_g_time_row(
     *,
     g_time: np.ndarray,

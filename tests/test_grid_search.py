@@ -472,6 +472,35 @@ def test_cli_parser_accepts_closure_tp_reachability_audit():
     assert args.multiplier_max == pytest.approx(2.0)
 
 
+def test_cli_parser_accepts_fracture_initiation_audit():
+    from clotho.cli import build_parser
+
+    args = build_parser().parse_args([
+        "fracture-initiation-audit",
+        "--stage-params", "/tmp/stage_params.csv",
+        "--well-root", "/tmp/well4",
+        "--manifest", "/tmp/manifest.csv",
+        "--tp-reachability", "/tmp/phase5j/tp_reachability_audit.csv",
+        "--output", "/tmp/phase5k/fracture_initiation_tp_audit.csv",
+        "--summary-output", "/tmp/phase5k/fracture_initiation_tp_summary.csv",
+        "--volume-column", "total_volume",
+        "--rate-time-unit", "minute",
+        "--min-rate", "10",
+        "--design-rate", "18",
+        "--rate-step-fraction", "0.8",
+        "--pressure-source", "estimated-bottomhole",
+        "--stable-pressure-window-points", "20",
+        "--stable-pressure-slope-threshold", "0.05",
+    ])
+
+    assert args.command == "fracture-initiation-audit"
+    assert args.tp_reachability == Path("/tmp/phase5j/tp_reachability_audit.csv")
+    assert args.output == Path("/tmp/phase5k/fracture_initiation_tp_audit.csv")
+    assert args.summary_output == Path("/tmp/phase5k/fracture_initiation_tp_summary.csv")
+    assert args.design_rate == pytest.approx(18.0)
+    assert args.rate_step_fraction == pytest.approx(0.8)
+
+
 def test_count_perf_modes_expand_correctly():
     grid = _trivial_grid(
         perf_friction_mode=["none", "constant", "orifice"],

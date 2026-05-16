@@ -11,6 +11,7 @@ from clotho import __version__
 from clotho.batch import run_derivative_batch
 from clotho.closure import (
     build_closure_g_time_efficiency_audit,
+    build_fracture_initiation_tp_audit,
     build_tp_sensitivity_efficiency,
     build_tp_reachability_audit,
     run_efficiency_prior_closure_sweep,
@@ -335,6 +336,26 @@ def build_parser() -> argparse.ArgumentParser:
     tp_reachability.add_argument("--g-time-m", default=0.8, type=float)
     tp_reachability.add_argument("--multiplier-min", default=0.05, type=float)
     tp_reachability.add_argument("--multiplier-max", default=2.0, type=float)
+
+    initiation_audit = subparsers.add_parser(
+        "fracture-initiation-audit",
+        help="Phase 5K fracture initiation timing / tp rule audit. CSV-only diagnostic; does not change default tp.",
+    )
+    initiation_audit.add_argument("--stage-params", required=True, type=Path)
+    initiation_audit.add_argument("--well-root", required=True, type=Path)
+    initiation_audit.add_argument("--manifest", required=True, type=Path)
+    initiation_audit.add_argument("--tp-reachability", required=True, type=Path)
+    initiation_audit.add_argument("--output", required=True, type=Path)
+    initiation_audit.add_argument("--summary-output", required=True, type=Path)
+    initiation_audit.add_argument("--volume-column", default="total_volume")
+    initiation_audit.add_argument("--rate-time-unit", choices=["second", "minute"], default="minute")
+    initiation_audit.add_argument("--min-rate", default=10.0, type=float)
+    initiation_audit.add_argument("--design-rate", default=18.0, type=float)
+    initiation_audit.add_argument("--rate-step-fraction", default=0.8, type=float)
+    initiation_audit.add_argument("--pressure-source", choices=["estimated-bottomhole", "wellhead"], default="estimated-bottomhole")
+    initiation_audit.add_argument("--stable-pressure-window-points", default=20, type=int)
+    initiation_audit.add_argument("--stable-pressure-slope-threshold", default=0.05, type=float)
+    initiation_audit.add_argument("--well", default=None)
 
     grid = subparsers.add_parser(
         "pkn-grid-search",
@@ -1188,6 +1209,39 @@ def _run_closure_tp_reachability_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_fracture_initiation_audit(args: argparse.Namespace) -> int:
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.summary_output).parent.mkdir(parents=True, exist_ok=True)
+    result = build_fracture_initiation_tp_audit(
+        stage_params_path=args.stage_params,
+        well_root=args.well_root,
+        manifest_path=args.manifest,
+        tp_reachability_path=args.tp_reachability,
+        volume_column=args.volume_column,
+        rate_time_unit=args.rate_time_unit,
+        min_rate=args.min_rate,
+        design_rate=args.design_rate,
+        rate_step_fraction=args.rate_step_fraction,
+        pressure_source=args.pressure_source,
+        stable_pressure_window_points=args.stable_pressure_window_points,
+        stable_pressure_slope_threshold=args.stable_pressure_slope_threshold,
+        well=args.well,
+    )
+    result["audit"].to_csv(args.output, index=False)
+    result["summary"].to_csv(args.summary_output, index=False)
+
+    print(f"fracture_initiation_audit_output_path={args.output}")
+    print(f"fracture_initiation_audit_summary_output_path={args.summary_output}")
+    print(f"fracture_initiation_audit_rows={len(result['audit'])}")
+    if "recommended_tp_review_priority" in result["audit"].columns:
+        for priority, count in result["audit"]["recommended_tp_review_priority"].astype(str).value_counts().items():
+            print(f"fracture_initiation_audit_priority_{priority}_count={int(count)}")
+    print("fracture_initiation_audit_default_tp_changed=False")
+    print("fracture_initiation_audit_formula_default_changed=False")
+    print("fracture_initiation_audit_is_final_physical_conclusion=False")
+    return 0
+
+
 def _run_pkn_grid_search(args: argparse.Namespace) -> int:
     grid_kwargs = {
         "closure_min_elapsed_seconds": parse_float_grid(args.closure_min_elapsed_grid),
@@ -1310,6 +1364,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "closure-tp-reachability-audit":
         try:
             return _run_closure_tp_reachability_audit(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "fracture-initiation-audit":
+        try:
+            return _run_fracture_initiation_audit(args)
         except ValueError as exc:
             parser.error(str(exc))
     if args.command == "pkn-grid-search":

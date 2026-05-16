@@ -203,7 +203,7 @@ pkn_C_multiplier_to_20pct median ~0.28，提示当前 C_stage 大致需要缩小
 - 复核 tp 单位（rate_time_unit=minute → tp seconds 路径）；
 - 复核 I_F=0.722464726919 的来源积分 (TODO #19)；
 - 在确认所有 sanity check 后，决定是否需要重新定义 C_stage（如改用 calibrated Carter C 代替 stable slope）；
-- **不通过调 C 强行让 shut-in efficiency 达到 20%**。
+- **不通过调 C 让 shut-in efficiency 达到 20%**。
 
 ## 27. Phase 5F 网格搜索后续
 
@@ -317,3 +317,30 @@ valid falloff window 所需的 `tp_multiplier`。它只做 reachability audit，
   是否存在超长 `tp_corrected_seconds` 或 G-time 口径问题；
 - 结合 pressure falloff 图复核 valid window 是否应该延长；
 - 不写“tp 一定错了”，不把 20% efficiency 当硬目标。
+
+## 31. Phase 5K fracture initiation timing audit 后续
+
+Phase 5K 新增 `clotho fracture-initiation-audit`，比较三套起裂候选规则：
+pressure peak、extension stable 和 rate step，并与 Phase 5J 的 required
+`tp_multiplier` 对照。
+
+当前 well4 smoke 的关键现象：
+
+- pressure peak median multiplier 约 0.652，最接近旧 PPT stage 1 的
+  `153/228≈0.671` sanity reference；
+- extension stable median multiplier 约 0.479，更激进，且只有 22 个 valid stage；
+- rate step median multiplier 约 0.950，基本接近当前 `tp`；
+- target eta 0.10 可由 pressure peak 解释 25/28、extension stable 解释 20/22、
+  rate step 解释 11/28；
+- target eta 0.20 只能由 pressure peak 解释 7/28、extension stable 解释 6/22、
+  rate step 解释 0/28；
+- high-priority stages: 2, 3, 5, 9, 10, 11, 12, 17, 18, 19, 21, 26, 28, 29。
+
+需要继续做：
+
+- 对 high-priority stages 画 pressure/rate 曲线，人工标记 pressure peak 是否为真实
+  breakdown；
+- 对 extension stable 可达 20% 的 stage，检查稳定窗口是否只是算法找到的平段；
+- 对 rate step 无法解释 20% 的事实保持边界：排量达到设计值不代表裂缝已经打开；
+- 人工比较 pressure peak 与 extension stable 的分歧，尤其 multiplier 差异 >0.4 的段；
+- 不把任何候选规则自动作为最终 `tp`。

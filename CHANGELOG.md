@@ -3138,7 +3138,7 @@ shut-in efficiency 计数:
 - 主导项是 preclosure leakoff（shut-in unit 中 ~93–99%），由 C_stage 驱动；
 - C_multiplier_to_20pct median ~0.28：当前 C_stage 大致需要缩小到原来的 1/3.5 才能让 shut-in efficiency 达到 20%；
 - 这强烈暗示 **C_stage 偏大**（candidate 解释，未确认）：可能由 stable segment 选段（stage 5 slope=-930 极端）、H_p / fleak 定义、tp/sqrt(tp) 单位、I_F 在 C 公式里的整体口径造成；
-- **不通过调 C 强行达到 20%**；Phase 5D.6 只输出 sanity audit，不修改模型。
+- **不通过调 C 达到 20%**；Phase 5D.6 只输出 sanity audit，不修改模型。
 
 边界（5D.6）：
 
@@ -3943,6 +3943,96 @@ Interpretation:
   not replace closure truth. It says the current valid window plus current
   G-time/tp convention does not support target 20% by ordinary initiation-time
   correction alone.
+
+Scope confirmation:
+
+- no default `tp` change；
+- no default closure pick change；
+- no formula default change；
+- no `I_F` change；
+- no H_w default change；
+- no real data added to repo；
+- no `/tmp` CSV/PNG committed；
+- no push master；
+
+## Phase 5K：fracture initiation timing audit
+
+Phase 5K adds a CSV-only `fracture-initiation-audit` command to compare three
+candidate fracture-initiation timing rules against the Phase 5J required tp
+multipliers. It does not change the default `tp`, closure pick, or formulas.
+
+Implementation:
+
+- Added breakdown pressure peak rule:
+  - searches the pre-shut-in pumping interval with `rate >= min_rate`;
+  - selects the maximum pressure point.
+- Added extension-pressure stable rule:
+  - starts after the pressure peak;
+  - scans for the first pressure-vs-time window whose slope and step changes
+    satisfy the stable threshold while rate remains above `min_rate`.
+- Added rate-step / design-rate onset rule:
+  - selects the first point with `rate >= design_rate * rate_step_fraction`.
+- Added `build_fracture_initiation_tp_audit()`:
+  - computes each rule's tp and multiplier relative to current tp;
+  - joins Phase 5J required multipliers for eta 0.10 / 0.15 / 0.20;
+  - reports rule-level target reachability and a review priority.
+- Added summary CSV by rule:
+  - valid stage count;
+  - multiplier min / median / max;
+  - eta 0.10 / 0.20 reachable counts;
+  - plausible / aggressive / extreme multiplier counts.
+- Added synthetic tests for:
+  - pressure peak selection;
+  - extension-stable window selection;
+  - rate-step onset;
+  - tp multiplier calculation;
+  - target reachability join;
+  - high-priority rule disagreement.
+
+Reference smoke outside repo:
+
+```text
+output_dir: /tmp/gfunction-ref-audit-phase5k/
+audit rows: 28
+
+breakdown_peak:
+  valid=28
+  multiplier min/median/max=0.019 / 0.652 / 0.945
+  eta10 reachable=25
+  eta20 reachable=7
+  plausible/aggressive/extreme=15 / 8 / 5
+
+extension_stable:
+  valid=22
+  multiplier min/median/max=0.019 / 0.479 / 0.939
+  eta10 reachable=20
+  eta20 reachable=6
+  plausible/aggressive/extreme=10 / 6 / 6
+
+rate_step:
+  valid=28
+  multiplier min/median/max=0.927 / 0.950 / 0.997
+  eta10 reachable=11
+  eta20 reachable=0
+  plausible/aggressive/extreme=28 / 0 / 0
+
+review priority:
+  high=14
+  medium=14
+  high stages=2, 3, 5, 9, 10, 11, 12, 17, 18, 19, 21, 26, 28, 29
+```
+
+Interpretation:
+
+- The pressure-peak rule median multiplier (0.652) is closest to the old PPT
+  stage 1 sanity reference `153/228≈0.671`.
+- Extension-stable has a lower median multiplier (0.479), so it is more
+  aggressive and needs manual plot review.
+- Rate-step is close to current tp and cannot explain eta 20%.
+- Eta 10% can be explained by many pressure-based candidate rules.
+- Eta 20% remains unsupported by ordinary initiation timing: pressure peak
+  reaches only 7/28, extension stable reaches 6/22 valid, and rate step reaches
+  0/28.
 
 Scope confirmation:
 

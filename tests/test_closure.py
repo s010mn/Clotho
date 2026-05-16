@@ -14,6 +14,7 @@ from clotho.closure import (
     PHYSICAL_PKN_HW_M,
     PHYSICAL_PKN_IF,
     build_efficiency_prior_correlation_table,
+    build_fracture_initiation_tp_audit,
     build_g_time_scale_efficiency_diagnostic,
     build_observation_correlation_table,
     build_target_Gc_availability,
@@ -24,10 +25,14 @@ from clotho.closure import (
     classify_tp_reachability,
     compute_C_multiplier_to_fluid_efficiency,
     compute_flow_allocation_eta,
+    compute_fracture_initiation_rule_reachability,
     compute_g_function_closure_efficiency,
     compute_physical_leakoff_C,
+    compute_rule_tp_multiplier,
     compute_tp_scaled_g_time,
     g_time_for_fluid_efficiency,
+    pick_breakdown_pressure_peak_initiation,
+    pick_extension_stable_initiation,
     reconcile_fluid_efficiencies,
     compute_stress_shadow,
     effective_volume_correction,
@@ -38,7 +43,9 @@ from clotho.closure import (
     pick_fracture_initiation_candidate,
     pick_mcclure_compliance_closure_candidate,
     pick_stable_pressure_g_segment,
+    pick_rate_step_initiation,
     required_tp_multiplier_for_target_g,
+    recommend_tp_review_priority,
     select_target_g_time_row,
     run_closure_batch,
     select_closure_candidate,
@@ -478,6 +485,171 @@ class TestTPReachabilityAudit:
         out = pd.read_csv(output_path)
         assert len(out) == 2
         assert "tp_reachability_interpretation" in out.columns
+
+
+class TestFractureInitiationTimingAudit:
+    @staticmethod
+    def _curve_for_initiation_rules() -> pd.DataFrame:
+        rows: list[dict[str, object]] = []
+        shut_in_seconds = 10 * 3600
+        for i in range(100):
+            t = shut_in_seconds - (100 - i)
+            h = t // 3600
+            m = (t % 3600) // 60
+            s = t % 60
+            if i < 20:
+                pressure = 70.0 + i * 1.0
+                rate = 8.0 + i * 0.3
+            elif i == 30:
+                pressure = 130.0
+                rate = 18.0
+            elif 45 <= i < 65:
+                pressure = 112.0 + (i - 45) * 0.01
+                rate = 18.0
+            else:
+                pressure = 108.0 + 0.1 * i
+                rate = 18.0 if i >= 20 else 8.0 + i * 0.3
+            rows.append({
+                "time_text": f"{h:02d}:{m:02d}:{s:02d}",
+                "seconds_of_day": float(t),
+                "wellhead_pressure_mpa": pressure,
+                "estimated_bottomhole_pressure_mpa": pressure + 40.0,
+                "rate": rate,
+                "stage_volume": float(i),
+                "total_volume": float(i),
+            })
+        t = shut_in_seconds
+        rows.append({
+            "time_text": "10:00:00",
+            "seconds_of_day": float(t),
+            "wellhead_pressure_mpa": 100.0,
+            "estimated_bottomhole_pressure_mpa": 140.0,
+            "rate": 0.0,
+            "stage_volume": 100.0,
+            "total_volume": 100.0,
+        })
+        return pd.DataFrame(rows)
+
+    def test_breakdown_peak_rule_selects_max_pressure_in_pumping_segment(self):
+        curve = self._curve_for_initiation_rules()
+
+        result = pick_breakdown_pressure_peak_initiation(
+            curve,
+            shut_in_index=100,
+            pressure_column="estimated_bottomhole_pressure_mpa",
+            min_rate=10.0,
+        )
+
+        assert result["initiation_rule_breakdown_peak_status"] == "ok"
+        assert result["initiation_index_breakdown_peak"] == 30
+        assert result["initiation_pressure_breakdown_peak_mpa"] == pytest.approx(170.0)
+
+    def test_extension_stable_rule_selects_first_stable_window_after_peak(self):
+        curve = self._curve_for_initiation_rules()
+
+        result = pick_extension_stable_initiation(
+            curve,
+            shut_in_index=100,
+            pressure_column="estimated_bottomhole_pressure_mpa",
+            min_rate=10.0,
+            window_points=10,
+            slope_threshold=0.05,
+        )
+
+        assert result["initiation_rule_extension_stable_status"] == "ok"
+        assert result["initiation_index_extension_stable"] == 45
+        assert abs(result["extension_stable_window_slope"]) <= 0.05
+
+    def test_rate_step_rule_selects_design_rate_fraction_onset(self):
+        curve = self._curve_for_initiation_rules()
+
+        result = pick_rate_step_initiation(
+            curve,
+            shut_in_index=100,
+            design_rate=18.0,
+            rate_step_fraction=0.8,
+        )
+
+        assert result["initiation_rule_rate_step_status"] == "ok"
+        assert result["initiation_index_rate_step"] == 20
+        assert result["rate_at_rate_step"] >= 14.4
+
+    def test_rule_tp_multiplier(self):
+        assert compute_rule_tp_multiplier(rule_tp_seconds=70.0, current_tp_seconds=100.0) == pytest.approx(0.7)
+
+    def test_target_reachability_join(self):
+        assert compute_fracture_initiation_rule_reachability(
+            rule_multiplier=0.4,
+            required_multiplier=0.5,
+        ) == "reaches_target_but_rule_extreme"
+        assert compute_fracture_initiation_rule_reachability(
+            rule_multiplier=0.7,
+            required_multiplier=0.5,
+        ) == "does_not_reach_target"
+
+    def test_rule_priority_high_when_rules_disagree_strongly(self):
+        row = pd.Series({
+            "tp_multiplier_breakdown_peak": 0.9,
+            "tp_multiplier_extension_stable": 0.4,
+            "tp_multiplier_rate_step": 0.85,
+            "target_0p20_reached_by_breakdown_peak": "does_not_reach_target",
+            "target_0p20_reached_by_extension_stable": "reaches_target_but_rule_extreme",
+            "target_0p20_reached_by_rate_step": "does_not_reach_target",
+        })
+
+        assert recommend_tp_review_priority(row) == "high"
+
+    def test_build_fracture_initiation_tp_audit_synthetic(self, tmp_path: Path):
+        stage_dir = tmp_path / "stage_data"
+        stage_dir.mkdir()
+        curve = self._curve_for_initiation_rules()
+        curve.rename(columns={"time_text": "time", "wellhead_pressure_mpa": "wellhead_pressure"}).to_csv(
+            stage_dir / "stage_01.csv",
+            index=False,
+        )
+        params = pd.DataFrame([{
+            "well": "W1",
+            "stage": 1,
+            "file": "stage_data/stage_01.csv",
+            "shut_in": "10:00:00",
+            "add_pressure": 40.0,
+        }])
+        stage_params = tmp_path / "stage_params.csv"
+        params.to_csv(stage_params, index=False)
+        manifest = pd.DataFrame([{
+            "stage": 1,
+            "max_sustained_rate": 18.0,
+            "valid_falloff_end_elapsed": 100.0,
+        }])
+        manifest_path = tmp_path / "manifest.csv"
+        manifest.to_csv(manifest_path, index=False)
+        reach = pd.DataFrame([
+            {"stage": 1, "target_eta": 0.10, "required_tp_multiplier": 0.8},
+            {"stage": 1, "target_eta": 0.20, "required_tp_multiplier": 0.4},
+        ])
+        reach_path = tmp_path / "tp_reachability.csv"
+        reach.to_csv(reach_path, index=False)
+
+        result = build_fracture_initiation_tp_audit(
+            stage_params_path=stage_params,
+            well_root=tmp_path,
+            manifest_path=manifest_path,
+            tp_reachability_path=reach_path,
+            volume_column="total_volume",
+            rate_time_unit="minute",
+            min_rate=10.0,
+            design_rate=18.0,
+            rate_step_fraction=0.8,
+            pressure_source="estimated-bottomhole",
+            stable_pressure_window_points=10,
+            stable_pressure_slope_threshold=0.05,
+        )
+
+        audit = result["audit"]
+        assert len(audit) == 1
+        assert audit.iloc[0]["initiation_rule_breakdown_peak_status"] == "ok"
+        assert "target_0p10_reached_by_breakdown_peak" in audit.columns
+        assert not result["summary"].empty
 
 
 class TestBarreeTangentClosure:
