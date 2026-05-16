@@ -1,0 +1,4 @@
+rule,valid_stage_count,multiplier_min,multiplier_median,multiplier_max,eta_0p10_reachable_count,eta_0p20_reachable_count,plausible_count,aggressive_count,extreme_count
+breakdown_peak,28,0.01937728300574013,0.6519770911757337,0.9452956020187455,25,7,15,8,5
+extension_stable,22,0.01854235519220734,0.47912454604687293,0.93943763518385,20,6,10,6,6
+rate_step,28,0.9270479426198566,0.950281356150123,0.9969248510474726,11,0,28,0,0

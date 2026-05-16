@@ -1,0 +1,34 @@
+category,metric,value,note
+old_length,2x_max_L_vs_microseismic,-0.356,from reported smoke output; old PPT half-length convention
+old_length,2x_mean_L_vs_microseismic,-0.386,from reported smoke output; old PPT half-length convention
+old_length,2x_median_L_vs_microseismic,-0.391,from reported smoke output; old PPT half-length convention
+old_length,2x_max_L_vs_em,-0.081,from reported smoke output; old PPT half-length convention
+old_length,2x_mean_L_vs_em,-0.12,from reported smoke output; old PPT half-length convention
+old_length,2x_median_L_vs_em,-0.126,from reported smoke output; old PPT half-length convention
+pkn,computed_stage_count,28.0,derived from fluid_efficiency_stage_summary; stage 4/25 placeholder
+pkn,full_well_stage_count,30.0,derived from fluid_efficiency_stage_summary
+pkn,pkn_storage_vs_microseismic_pearson,-0.2350935397400256,derived from committed summary
+pkn,pkn_storage_vs_microseismic_spearman,-0.2565088733067132,derived from committed summary
+pkn,pkn_storage_vs_em_pearson,0.013548630421408761,derived from committed summary
+pkn,pkn_storage_vs_em_spearman,0.12807881773399013,derived from committed summary
+pkn,pkn_leakoff_vs_em_pearson,0.5940721769996733,derived from committed summary
+pkn,pkn_nonstorage_vs_em_pearson,0.5940721769996733,derived from committed summary
+efficiency,pkn_shutin_efficiency_min,0.0051286958754995,derived from fluid_efficiency_stage_summary
+efficiency,pkn_shutin_efficiency_median,0.07859000467776955,derived from fluid_efficiency_stage_summary
+efficiency,pkn_shutin_efficiency_max,0.2564241986025623,derived from fluid_efficiency_stage_summary
+efficiency,g_function_efficiency_min,0.0075665725559045,derived from fluid_efficiency_stage_summary
+efficiency,g_function_efficiency_median,0.053179495050596,derived from fluid_efficiency_stage_summary
+efficiency,g_function_efficiency_max,0.089356276795663,derived from fluid_efficiency_stage_summary
+efficiency,efficiency_difference_median,0.027984952967731347,derived from fluid_efficiency_stage_summary
+closure_g_time,selected_closure_g_time_min,0.01524852417636,derived from closure_g_time_efficiency_audit
+closure_g_time,selected_closure_g_time_median,0.11233513483145674,derived from closure_g_time_efficiency_audit
+closure_g_time,selected_closure_g_time_max,0.1962485975991571,derived from closure_g_time_efficiency_audit
+closure_g_time,count_Gc_lt_0p2,28.0,derived from closure_g_time_efficiency_audit
+tp,target_eta_0p20_required_multiplier_min,0.1301956369649558,derived from tp_reachability_audit
+tp,target_eta_0p20_required_multiplier_median,0.35682840417359607,derived from tp_reachability_audit
+tp,target_eta_0p20_required_multiplier_max,0.4796112407681073,derived from tp_reachability_audit
+initiation,breakdown_peak_multiplier_median,0.6519770911757337,derived from fracture_initiation_tp_summary
+initiation,extension_stable_multiplier_median,0.4791245460468729,derived from fracture_initiation_tp_summary
+initiation,rate_step_multiplier_median,0.950281356150123,derived from fracture_initiation_tp_summary
+initiation,high_priority_stage_count,14.0,derived from fracture_initiation_tp_audit
+initiation,medium_priority_stage_count,14.0,derived from fracture_initiation_tp_audit

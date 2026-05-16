@@ -1,0 +1,8 @@
+file,purpose,source_tmp_path,committed,notes
+physical_pkn_stage_summary.csv,physical PKN stage-level summary used for report plots,derived from /tmp/gfunction-ref-audit-phase5h/fluid_efficiency_stage_summary.csv,yes,selected derived columns only; no raw well data
+fluid_efficiency_stage_summary.csv,PKN vs G-function fluid efficiency audit summary,/tmp/gfunction-ref-audit-phase5h/fluid_efficiency_stage_summary.csv,yes,derived summary only
+closure_g_time_efficiency_audit.csv,closure Gc / tp / efficiency root-cause audit,/tmp/gfunction-ref-audit-phase5h1/closure_g_time_efficiency_audit.csv,yes,derived summary only
+tp_reachability_audit.csv,tp multiplier needed for target efficiency reachability,/tmp/gfunction-ref-audit-phase5j/tp_reachability_audit.csv,yes,derived summary only
+fracture_initiation_tp_audit.csv,three initiation rules vs required tp multipliers,/tmp/gfunction-ref-audit-phase5k/fracture_initiation_tp_audit.csv,yes,derived summary only
+fracture_initiation_tp_summary.csv,rule-level initiation multiplier summary,/tmp/gfunction-ref-audit-phase5k/fracture_initiation_tp_summary.csv,yes,derived summary only
+report_core_numbers.csv,small table of weekly report headline numbers,generated from committed artifacts and reported smoke output for old-length historic values,yes,derived report table

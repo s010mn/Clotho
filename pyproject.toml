@@ -5,8 +5,10 @@ description = "Research code for shut-in pressure response, G-function/DFIT anal
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "matplotlib>=3.10.9",
     "numpy>=2.4.4",
     "pandas>=3.0.3",
+    "scipy>=1.17.1",
 ]
 
 [project.scripts]

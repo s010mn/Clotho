@@ -4044,3 +4044,25 @@ Scope confirmation:
 - no real data added to repo；
 - no `/tmp` CSV/PNG committed；
 - no push master；
+
+## Phase 5L：weekly report package
+
+- Added complete weekly report package under `reports/weekly_sprint/`.
+- Added report markdown and PPT outline:
+  - `reports/weekly_sprint/WEEKLY_REPORT_CLOTHO_SPRINT.md`;
+  - `reports/weekly_sprint/PPT_OUTLINE_CLOTHO_SPRINT.md`.
+- Added selected PNG report figures under `reports/weekly_sprint/figures/`.
+- Added derived summary CSV artifacts under `reports/weekly_sprint/artifacts/`
+  for traceability.
+- Added `artifact_manifest.csv` documenting each committed artifact's purpose
+  and source `/tmp` path.
+- Added `matplotlib` and `scipy` project dependencies so report figures and
+  Spearman correlation annotations can be regenerated with the same scientific
+  plotting/statistics stack.
+- No raw well data, Gfunction zip, `wells/well4`, `data/raw`, or Excel files
+  were committed.
+- The committed CSVs are derived report summaries only.
+- Closure / PKN / fluid efficiency / tp results remain candidate and diagnostic
+  outputs, not final interpretation.
+- No physical formula changes.
+- No push to master.
