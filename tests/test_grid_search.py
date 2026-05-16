@@ -449,6 +449,29 @@ def test_cli_parser_accepts_closure_efficiency_sweep():
     assert args.pkn_Hw_m == pytest.approx(50.0)
 
 
+def test_cli_parser_accepts_closure_tp_reachability_audit():
+    from clotho.cli import build_parser
+
+    args = build_parser().parse_args([
+        "closure-tp-reachability-audit",
+        "--stage-summary", "/tmp/phase5h1/closure_g_time_efficiency_audit.csv",
+        "--efficiency-prior-stage-table", "/tmp/phase5i/efficiency_prior_stage_table.csv",
+        "--output", "/tmp/phase5j/tp_reachability_audit.csv",
+        "--efficiency-grid", "0.10,0.20",
+        "--g-time-m", "0.8",
+        "--multiplier-min", "0.05",
+        "--multiplier-max", "2.0",
+    ])
+
+    assert args.command == "closure-tp-reachability-audit"
+    assert args.stage_summary == Path("/tmp/phase5h1/closure_g_time_efficiency_audit.csv")
+    assert args.efficiency_prior_stage_table == Path("/tmp/phase5i/efficiency_prior_stage_table.csv")
+    assert args.output == Path("/tmp/phase5j/tp_reachability_audit.csv")
+    assert args.efficiency_grid == "0.10,0.20"
+    assert args.multiplier_min == pytest.approx(0.05)
+    assert args.multiplier_max == pytest.approx(2.0)
+
+
 def test_count_perf_modes_expand_correctly():
     grid = _trivial_grid(
         perf_friction_mode=["none", "constant", "orifice"],

@@ -12,6 +12,7 @@ from clotho.batch import run_derivative_batch
 from clotho.closure import (
     build_closure_g_time_efficiency_audit,
     build_tp_sensitivity_efficiency,
+    build_tp_reachability_audit,
     run_efficiency_prior_closure_sweep,
     run_closure_batch,
     write_closure_batch_outputs,
@@ -317,6 +318,23 @@ def build_parser() -> argparse.ArgumentParser:
     closure_eff_sweep.add_argument("--pkn-C-coupling", choices=["stage-constant", "shadow-scaled"], default="stage-constant")
     closure_eff_sweep.add_argument("--pkn-Hw-m", default=None, type=float)
     closure_eff_sweep.add_argument("--well", default=None)
+
+    tp_reachability = subparsers.add_parser(
+        "closure-tp-reachability-audit",
+        help="Phase 5J tp / valid-window reachability audit. CSV-only diagnostic; does not change default tp.",
+    )
+    tp_reachability.add_argument("--stage-summary", required=True, type=Path)
+    tp_reachability.add_argument(
+        "--efficiency-prior-stage-table",
+        default=None,
+        type=Path,
+        help="Optional Phase 5I efficiency_prior_stage_table.csv used to supply per-stage max_available_Gc.",
+    )
+    tp_reachability.add_argument("--output", required=True, type=Path)
+    tp_reachability.add_argument("--efficiency-grid", default="0.10,0.15,0.20,0.30,0.40")
+    tp_reachability.add_argument("--g-time-m", default=0.8, type=float)
+    tp_reachability.add_argument("--multiplier-min", default=0.05, type=float)
+    tp_reachability.add_argument("--multiplier-max", default=2.0, type=float)
 
     grid = subparsers.add_parser(
         "pkn-grid-search",
@@ -1123,6 +1141,53 @@ def _run_closure_efficiency_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_closure_tp_reachability_audit(args: argparse.Namespace) -> int:
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    summary = pd.read_csv(args.stage_summary)
+    phase5i_stage_table = args.efficiency_prior_stage_table
+    if phase5i_stage_table is None:
+        default_phase5i = Path("/tmp/gfunction-ref-audit-phase5i/efficiency_prior_stage_table.csv")
+        if default_phase5i.exists():
+            phase5i_stage_table = default_phase5i
+    if (
+        phase5i_stage_table is not None
+        and Path(phase5i_stage_table).exists()
+        and "max_available_Gc" not in summary.columns
+    ):
+        prior = pd.read_csv(phase5i_stage_table)
+        if {"stage", "max_available_Gc"} <= set(prior.columns):
+            max_g = (
+                prior[["stage", "max_available_Gc"]]
+                .dropna(subset=["max_available_Gc"])
+                .groupby("stage", as_index=False)["max_available_Gc"]
+                .max()
+            )
+            summary = summary.merge(max_g, on="stage", how="left")
+    audit = build_tp_reachability_audit(
+        summary,
+        efficiency_grid=parse_float_grid(args.efficiency_grid),
+        g_time_m=args.g_time_m,
+        multiplier_min=args.multiplier_min,
+        multiplier_max=args.multiplier_max,
+    )
+    audit.to_csv(args.output, index=False)
+
+    print(f"closure_tp_reachability_audit_output_path={args.output}")
+    print(f"closure_tp_reachability_audit_rows={len(audit)}")
+    if not audit.empty:
+        for eta, grp in audit.groupby("target_eta", dropna=False):
+            status_counts = grp["reachability_status"].astype(str).value_counts()
+            class_counts = grp["reachability_class"].astype(str).value_counts()
+            status_text = ",".join(f"{k}={int(v)}" for k, v in status_counts.items())
+            class_text = ",".join(f"{k}={int(v)}" for k, v in class_counts.items())
+            print(f"closure_tp_reachability_target={eta}:status:{status_text}")
+            print(f"closure_tp_reachability_target={eta}:class:{class_text}")
+    print("closure_tp_reachability_default_tp_changed=False")
+    print("closure_tp_reachability_formula_default_changed=False")
+    print("closure_tp_reachability_is_final_physical_conclusion=False")
+    return 0
+
+
 def _run_pkn_grid_search(args: argparse.Namespace) -> int:
     grid_kwargs = {
         "closure_min_elapsed_seconds": parse_float_grid(args.closure_min_elapsed_grid),
@@ -1240,6 +1305,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "closure-efficiency-sweep":
         try:
             return _run_closure_efficiency_sweep(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.command == "closure-tp-reachability-audit":
+        try:
+            return _run_closure_tp_reachability_audit(args)
         except ValueError as exc:
             parser.error(str(exc))
     if args.command == "pkn-grid-search":

@@ -667,3 +667,88 @@ Phase 5I 回答：
 下一步应人工复核有效 falloff window 是否过短、`tp` 起裂时刻是否偏早/偏晚、
 selected closure pick 是否偏早，以及 `eta_G=G_c/(G_c+2)` 与当前
 post-shut-in offset G-time 的公式兼容性。不能把 target efficiency 当作 closure truth。
+
+## Phase 5J：tp reachability audit
+
+Phase 5J 回应“`tp` 可能偏大，所以 `G` 小”的人工判断。这个方向是合理的数值机制：
+当前 G-time 使用 `delta = elapsed / tp`，在 fixed valid-window elapsed 下，`tp`
+越大，`delta` 越小，`G` 也越小。因此本阶段不改默认 `tp`，只计算如果要让 target
+`G_c` 进入当前 valid window，`tp` 需要缩短到当前值的多少倍。
+
+计算方法：
+
+```text
+target eta -> target Gc = 2 * eta / (1 - eta)
+tp_scaled = tp_corrected_seconds * required_tp_multiplier
+G(valid_falloff_end_elapsed / tp_scaled, m) >= target Gc
+```
+
+`required_tp_multiplier` 通过数值二分求最大可达 multiplier。它不是新默认参数，只是
+reachability audit。越接近 1，越可能由起裂时刻复核解释；越小，越不可能只靠普通
+起裂修正解释。
+
+旧 PPT 的 stage 1 起裂修正约为：
+
+```text
+153 min / 228 min = 0.671
+```
+
+这个 0.67 只作为人工 sanity reference。若多数 stage 要达到 20% efficiency
+(`G_c=0.5`) 需要 `tp_multiplier <0.3`，则说明当前有效窗口/G-time/efficiency formula
+不支持 20% prior，不能靠普通起裂修正解决。
+
+well4 reference smoke 输出在 `/tmp/gfunction-ref-audit-phase5j/`，未提交 CSV。
+当前命令从 Phase 5H.1 summary 读取 `tp_corrected_seconds`，并自动从 Phase 5I
+`efficiency_prior_stage_table.csv` 补充 `max_available_Gc`，再反推窗口末端 elapsed。
+
+```text
+target eta 0.10:
+  current_reachable=7
+  plausible 0.6-1.0=19
+  aggressive 0.3-0.6=2
+  missing=2
+  required multiplier min/median/max = 0.327 / 0.897 / 1.000
+
+target eta 0.15:
+  plausible 0.6-1.0=7
+  aggressive 0.3-0.6=20
+  extreme <0.3=1
+  missing=2
+  required multiplier min/median/max = 0.195 / 0.534 / 0.717
+
+target eta 0.20 (Gc=0.5):
+  plausible 0.6-1.0=0
+  aggressive 0.3-0.6=22
+  extreme <0.3=6
+  missing=2
+  required multiplier min/median/max = 0.130 / 0.357 / 0.480
+
+target eta 0.30:
+  extreme <0.3=28
+  missing=2
+  required multiplier min/median/max = 0.068 / 0.186 / 0.251
+
+target eta 0.40:
+  extreme <0.3=27
+  unreachable even at 0.05=1
+  missing=2
+  required multiplier min/median/max = 0.061 / 0.108 / 0.143
+```
+
+对 20% efficiency，`G_c=0.5` 在当前 valid window 中要达到可达，28 个 computed
+stage 全部需要把 `tp` 缩短到当前值的 0.48 以下；没有 stage 落在 `0.6-1.0`
+的 plausible 起裂修正区间。22 个 stage 在 `0.3-0.6`，属于激进起裂修正；6 个
+stage（8、11、17、20、21、29）需要 `<0.3`，不太可能只靠起裂时刻修正解释。
+
+对 10% efficiency，7 个 computed stage 当前已经可达，19 个 stage 只需
+`0.6-1.0` 的 plausible `tp` 修正。这些 stage 更适合进入人工起裂时刻复核，因为它们
+接近旧 PPT stage 1 的 0.67 sanity reference。
+
+Phase 5J 解释边界：
+
+- 不能写成“`tp` 一定错了”；
+- 不能把 20% efficiency 当作硬目标；
+- 把 `tp` 缩短后的结果不是正确闭合，只是 sensitivity；
+- 当前低 `G_c` 很可能受 `tp` 和 valid-window 长度共同限制；
+- target 20% 在当前窗口下不支持普通起裂修正解释，下一步应复核有效窗口长度、
+  起裂时刻、G-time definition 和 closure pick。

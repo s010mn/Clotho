@@ -80,6 +80,10 @@ stage 参数表
   - 在当前有效 falloff window 内寻找最接近 target `G_c` 的候选行；
   - 输出 selected baseline vs target prior 的可达性和相关性 CSV；
   - 只做 sensitivity audit，不修改默认 closure pick、PKN、`I_F` 或 H_w。
+- tp / valid-window reachability audit（Phase 5J, `closure-tp-reachability-audit`）：
+  - 计算 target `G_c` 进入当前 valid window 所需的 `tp` multiplier；
+  - 用二分求解，不做线性近似；
+  - 只做 reachability audit，不修改默认 `tp`、closure pick 或公式。
 
 ## 当前不做
 
@@ -350,6 +354,23 @@ uv run python -m clotho closure-efficiency-sweep \
 说明：efficiency prior 只回答“经验效率对应的 `G_c` 在当前窗口内是否可达、比
 selected closure 晚多少、相关性如何变化”。它不能替换 closure truth，也不能用来
 把结果校准到某个固定效率。
+
+Phase 5J tp reachability audit 示例：
+
+```bash
+uv run python -m clotho closure-tp-reachability-audit \
+  --stage-summary /tmp/gfunction-ref-audit-phase5h1/closure_g_time_efficiency_audit.csv \
+  --output /tmp/gfunction-ref-audit-phase5j/tp_reachability_audit.csv \
+  --efficiency-grid 0.10,0.15,0.20,0.30,0.40 \
+  --g-time-m 0.8 \
+  --multiplier-min 0.05 \
+  --multiplier-max 2.0
+```
+
+说明：该命令只回答“若保持当前 valid window，target `G_c` 需要把 `tp` 缩短到
+当前值的多少倍才可达”。如果 Phase 5H.1 summary 缺少 `max_available_Gc`，CLI 会
+在存在时自动读取 `/tmp/gfunction-ref-audit-phase5i/efficiency_prior_stage_table.csv`
+补充。它不证明 `tp` 错误，也不把 20% efficiency 当作硬目标。
 
 ## 数据边界
 

@@ -356,6 +356,249 @@ def build_tp_sensitivity_efficiency(
     return pd.DataFrame.from_records(rows)
 
 
+def required_tp_multiplier_for_target_g(
+    *,
+    elapsed_seconds: float,
+    tp_seconds: float,
+    target_g_time: float,
+    m: float,
+    multiplier_min: float = 0.05,
+    multiplier_max: float = 2.0,
+) -> dict[str, Any]:
+    """求让窗口末端达到 target Gc 所需的最大 tp multiplier。
+
+    固定 elapsed 时，tp 越短，delta=elapsed/tp 越大，G-time 越大。返回的
+    multiplier 是“最大仍可达”的 multiplier，也就是最少需要把 tp 缩短到
+    当前值的多少倍。
+    """
+    result: dict[str, Any] = {
+        "reachability_status": "missing_inputs",
+        "required_tp_multiplier": np.nan,
+        "current_max_available_Gc": np.nan,
+        "g_time_at_multiplier_min": np.nan,
+    }
+    try:
+        elapsed = float(elapsed_seconds)
+        tp = float(tp_seconds)
+        target = float(target_g_time)
+        m_value = float(m)
+        mult_min = float(multiplier_min)
+        mult_max = float(multiplier_max)
+    except (TypeError, ValueError):
+        return result
+
+    if (
+        not np.isfinite(elapsed)
+        or not np.isfinite(tp)
+        or not np.isfinite(target)
+        or not np.isfinite(m_value)
+        or not np.isfinite(mult_min)
+        or not np.isfinite(mult_max)
+        or elapsed <= 0
+        or tp <= 0
+        or target <= 0
+        or m_value <= 0
+        or mult_min <= 0
+        or mult_max <= mult_min
+    ):
+        return result
+
+    def g_at(multiplier: float) -> float:
+        return float(nolte_g_time(elapsed / (tp * multiplier), m_value))
+
+    current_g = g_at(1.0)
+    result["current_max_available_Gc"] = current_g
+    if current_g >= target:
+        result["reachability_status"] = "already_reachable"
+        result["required_tp_multiplier"] = 1.0
+        result["g_time_at_multiplier_min"] = g_at(mult_min)
+        return result
+
+    g_min = g_at(mult_min)
+    result["g_time_at_multiplier_min"] = g_min
+    if g_min < target:
+        result["reachability_status"] = "unreachable_even_at_min_multiplier"
+        return result
+
+    lo = mult_min
+    hi = min(1.0, mult_max)
+    if g_at(hi) >= target:
+        result["reachability_status"] = "ok"
+        result["required_tp_multiplier"] = hi
+        return result
+
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if g_at(mid) >= target:
+            lo = mid
+        else:
+            hi = mid
+
+    result["reachability_status"] = "ok"
+    result["required_tp_multiplier"] = float(lo)
+    return result
+
+
+def classify_tp_reachability(
+    required_multiplier: float | None,
+    *,
+    status: str,
+) -> str:
+    """把 required tp multiplier 分成便于人工审查的等级。"""
+    if status == "already_reachable":
+        return "current_reachable"
+    if status == "unreachable_even_at_min_multiplier":
+        return "unreachable_even_at_0p05"
+    if status == "missing_inputs":
+        return "missing_inputs"
+    try:
+        multiplier = float(required_multiplier)
+    except (TypeError, ValueError):
+        return "missing_inputs"
+    if not np.isfinite(multiplier):
+        return "missing_inputs"
+    if multiplier >= 0.6:
+        return "plausible_tp_correction_0p6_to_1p0"
+    if multiplier >= 0.3:
+        return "aggressive_tp_correction_0p3_to_0p6"
+    return "extreme_tp_correction_lt_0p3"
+
+
+def interpret_tp_reachability(reachability_class: str) -> str:
+    if reachability_class == "current_reachable":
+        return "current_valid_window_already_reaches_target_Gc"
+    if reachability_class == "plausible_tp_correction_0p6_to_1p0":
+        return "possibly_explainable_by_fracture_initiation_timing_review_stage1_old_ppt_reference_0p67"
+    if reachability_class == "aggressive_tp_correction_0p3_to_0p6":
+        return "requires_aggressive_tp_shortening_manual_initiation_review"
+    if reachability_class == "extreme_tp_correction_lt_0p3":
+        return "unlikely_explained_by_initiation_timing_alone"
+    if reachability_class == "unreachable_even_at_0p05":
+        return "not_reachable_even_if_tp_is_shortened_to_5pct"
+    return "missing_inputs_or_not_computed"
+
+
+def _delta_for_g_time(target_g_time: float, m: float) -> float:
+    """反解 G(delta,m)=target_G_time，仅用于从 Phase 5I max G 推回窗口长度。"""
+    target = float(target_g_time)
+    m_value = float(m)
+    if not np.isfinite(target) or target <= 0 or not np.isfinite(m_value) or m_value <= 0:
+        return np.nan
+    lo = 0.0
+    hi = 1.0
+    while float(nolte_g_time(hi, m_value)) < target:
+        hi *= 2.0
+        if hi > 1e12:
+            return np.nan
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if float(nolte_g_time(mid, m_value)) >= target:
+            hi = mid
+        else:
+            lo = mid
+    return float(hi)
+
+
+def build_tp_reachability_audit(
+    summary: pd.DataFrame,
+    *,
+    efficiency_grid: Sequence[float],
+    g_time_m: float = 0.8,
+    multiplier_min: float = 0.05,
+    multiplier_max: float = 2.0,
+) -> pd.DataFrame:
+    """构建 target Gc 在当前 valid window 下所需 tp multiplier 的审计表。"""
+    rows: list[dict[str, Any]] = []
+    columns = [
+        "stage",
+        "target_eta",
+        "target_Gc",
+        "tp_corrected_seconds",
+        "valid_falloff_end_elapsed",
+        "current_max_available_Gc",
+        "required_tp_multiplier",
+        "required_tp_seconds",
+        "tp_reduction_fraction",
+        "reachability_status",
+        "reachability_class",
+        "tp_reachability_interpretation",
+    ]
+    if summary.empty:
+        return pd.DataFrame(columns=columns)
+
+    target_pairs = [(float(eta), g_time_for_fluid_efficiency(float(eta))) for eta in efficiency_grid]
+    for _, row in summary.iterrows():
+        stage = row.get("stage", np.nan)
+        tp = pd.to_numeric(pd.Series([row.get("tp_corrected_seconds")]), errors="coerce").iloc[0]
+        elapsed = pd.to_numeric(pd.Series([
+            row.get("valid_falloff_end_elapsed", row.get("valid_falloff_end_elapsed_seconds", np.nan))
+        ]), errors="coerce").iloc[0]
+        provided_max_g = pd.to_numeric(pd.Series([
+            row.get("current_max_available_Gc", row.get("max_available_Gc", np.nan))
+        ]), errors="coerce").iloc[0]
+        m_value = pd.to_numeric(pd.Series([row.get("g_time_m", g_time_m)]), errors="coerce").iloc[0]
+        if not np.isfinite(m_value) or m_value <= 0:
+            m_value = float(g_time_m)
+
+        inferred_elapsed = np.nan
+        if (not np.isfinite(elapsed) or elapsed <= 0) and np.isfinite(provided_max_g) and np.isfinite(tp) and tp > 0:
+            delta = _delta_for_g_time(float(provided_max_g), float(m_value))
+            if np.isfinite(delta):
+                inferred_elapsed = float(delta * tp)
+                elapsed = inferred_elapsed
+
+        for eta, target_g in target_pairs:
+            result = required_tp_multiplier_for_target_g(
+                elapsed_seconds=elapsed,
+                tp_seconds=tp,
+                target_g_time=target_g,
+                m=float(m_value),
+                multiplier_min=multiplier_min,
+                multiplier_max=multiplier_max,
+            )
+            status = str(result["reachability_status"])
+            required_multiplier = result["required_tp_multiplier"]
+            reachability_class = classify_tp_reachability(
+                required_multiplier,
+                status=status,
+            )
+            required_tp_seconds = (
+                float(tp) * float(required_multiplier)
+                if np.isfinite(tp) and np.isfinite(required_multiplier)
+                else np.nan
+            )
+            rows.append({
+                "stage": stage,
+                "target_eta": eta,
+                "target_Gc": target_g,
+                "tp_corrected_seconds": float(tp) if np.isfinite(tp) else np.nan,
+                "valid_falloff_end_elapsed": float(elapsed) if np.isfinite(elapsed) else np.nan,
+                "valid_falloff_end_elapsed_source": (
+                    "inferred_from_current_max_available_Gc"
+                    if np.isfinite(inferred_elapsed)
+                    else "stage_summary_or_manifest"
+                    if np.isfinite(elapsed)
+                    else "missing"
+                ),
+                "current_max_available_Gc": (
+                    float(provided_max_g)
+                    if np.isfinite(provided_max_g)
+                    else result["current_max_available_Gc"]
+                ),
+                "required_tp_multiplier": required_multiplier,
+                "required_tp_seconds": required_tp_seconds,
+                "tp_reduction_fraction": (
+                    float(1.0 - required_multiplier)
+                    if np.isfinite(required_multiplier)
+                    else np.nan
+                ),
+                "reachability_status": status,
+                "reachability_class": reachability_class,
+                "tp_reachability_interpretation": interpret_tp_reachability(reachability_class),
+            })
+    return pd.DataFrame.from_records(rows)
+
+
 def select_target_g_time_row(
     *,
     g_time: np.ndarray,

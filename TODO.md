@@ -290,3 +290,30 @@ Phase 5I 新增 `clotho closure-efficiency-sweep`，把经验 fluid efficiency p
 - 复核 `eta_G=G_c/(G_c+2)` 与当前 post-shut-in offset G-time 的公式兼容性；
 - 不把 target efficiency prior 当作 closure truth；
 - 不用任意 G-time scale factor 把效率校准到 20%。
+
+## 30. Phase 5J tp reachability audit 后续
+
+Phase 5J 新增 `clotho closure-tp-reachability-audit`，计算 target `G_c` 进入当前
+valid falloff window 所需的 `tp_multiplier`。它只做 reachability audit，不改默认
+`tp`，也不说明缩短后的结果就是正确闭合。
+
+当前 well4 smoke 的关键现象：
+
+- target eta 0.10 (`Gc=0.222`)：7 个 current reachable，19 个 plausible
+  `tp_multiplier=0.6-1.0`；
+- target eta 0.20 (`Gc=0.5`)：0 个 plausible，22 个 aggressive
+  `0.3-0.6`，6 个 extreme `<0.3`；
+- target eta 0.20 的 required multiplier min/median/max 约为 0.130 / 0.357 / 0.480；
+- target eta 0.30 和 0.40 基本都要求 extreme 缩短，stage 29 在 eta 0.40 下
+  即使 `tp_multiplier=0.05` 也不可达；
+- 旧 PPT stage 1 起裂修正 sanity reference 约 0.67。
+
+需要继续做：
+
+- 对 target eta 0.10 中 `current_reachable` 或 `0.6-1.0` plausible 的 stage
+  优先复核起裂时刻；
+- 对 target eta 0.20 的 22 个 aggressive stage 只做人工候选清单，不直接改默认 `tp`；
+- 对需要 `<0.3` 的 stage（8、11、17、20、21、29）检查 valid-window 是否过短、
+  是否存在超长 `tp_corrected_seconds` 或 G-time 口径问题；
+- 结合 pressure falloff 图复核 valid window 是否应该延长；
+- 不写“tp 一定错了”，不把 20% efficiency 当硬目标。

@@ -17,9 +17,11 @@ from clotho.closure import (
     build_g_time_scale_efficiency_diagnostic,
     build_observation_correlation_table,
     build_target_Gc_availability,
+    build_tp_reachability_audit,
     classify_closure_elapsed_over_tp,
     classify_closure_elapsed_seconds,
     classify_closure_g_time,
+    classify_tp_reachability,
     compute_C_multiplier_to_fluid_efficiency,
     compute_flow_allocation_eta,
     compute_g_function_closure_efficiency,
@@ -36,6 +38,7 @@ from clotho.closure import (
     pick_fracture_initiation_candidate,
     pick_mcclure_compliance_closure_candidate,
     pick_stable_pressure_g_segment,
+    required_tp_multiplier_for_target_g,
     select_target_g_time_row,
     run_closure_batch,
     select_closure_candidate,
@@ -369,6 +372,112 @@ class TestClosureEfficiencyAuditHelpers:
     def test_physical_pkn_constants_unchanged(self):
         assert PHYSICAL_PKN_IF == pytest.approx(0.722464726919, rel=1e-12)
         assert PHYSICAL_PKN_HW_M == pytest.approx(50.0)
+
+
+class TestTPReachabilityAudit:
+    def test_required_tp_multiplier_already_reachable(self):
+        result = required_tp_multiplier_for_target_g(
+            elapsed_seconds=1000.0,
+            tp_seconds=100.0,
+            target_g_time=0.1,
+            m=0.8,
+        )
+
+        assert result["reachability_status"] == "already_reachable"
+        assert result["required_tp_multiplier"] == pytest.approx(1.0)
+
+    def test_required_tp_multiplier_unreachable_even_at_min(self):
+        result = required_tp_multiplier_for_target_g(
+            elapsed_seconds=1.0,
+            tp_seconds=1000.0,
+            target_g_time=100.0,
+            m=0.8,
+            multiplier_min=0.05,
+        )
+
+        assert result["reachability_status"] == "unreachable_even_at_min_multiplier"
+        assert np.isnan(result["required_tp_multiplier"])
+
+    def test_required_tp_multiplier_bisection_returns_largest_reachable_multiplier(self):
+        target = 0.5
+        result = required_tp_multiplier_for_target_g(
+            elapsed_seconds=1000.0,
+            tp_seconds=10000.0,
+            target_g_time=target,
+            m=0.8,
+            multiplier_min=0.05,
+            multiplier_max=2.0,
+        )
+
+        multiplier = result["required_tp_multiplier"]
+        assert result["reachability_status"] == "ok"
+        assert 0.05 < multiplier < 1.0
+        g_at_multiplier = nolte_g_time(1000.0 / (10000.0 * multiplier), 0.8)
+        g_just_larger = nolte_g_time(1000.0 / (10000.0 * (multiplier * 1.001)), 0.8)
+        assert g_at_multiplier >= target
+        assert g_just_larger < target
+
+    @pytest.mark.parametrize(
+        ("required_multiplier", "expected_class"),
+        [
+            (1.0, "current_reachable"),
+            (0.8, "plausible_tp_correction_0p6_to_1p0"),
+            (0.5, "aggressive_tp_correction_0p3_to_0p6"),
+            (0.2, "extreme_tp_correction_lt_0p3"),
+        ],
+    )
+    def test_tp_reachability_class_thresholds(self, required_multiplier, expected_class):
+        assert classify_tp_reachability(
+            required_multiplier,
+            status="already_reachable" if required_multiplier == 1.0 else "ok",
+        ) == expected_class
+
+    def test_build_tp_reachability_audit_from_synthetic_summary(self):
+        summary = pd.DataFrame({
+            "stage": [1, 2],
+            "tp_corrected_seconds": [10000.0, 10000.0],
+            "valid_falloff_end_elapsed": [1000.0, 500.0],
+            "selected_closure_elapsed_seconds": [400.0, 300.0],
+            "selected_closure_g_time": [0.1, 0.08],
+        })
+
+        audit = build_tp_reachability_audit(
+            summary,
+            efficiency_grid=[0.10, 0.20],
+            g_time_m=0.8,
+            multiplier_min=0.05,
+        )
+
+        assert len(audit) == 4
+        assert {"stage", "target_eta", "required_tp_multiplier", "reachability_class"} <= set(audit.columns)
+        assert audit["current_max_available_Gc"].notna().all()
+
+    def test_cli_closure_tp_reachability_audit_writes_csv(self, tmp_path: Path):
+        summary = pd.DataFrame({
+            "stage": [1],
+            "tp_corrected_seconds": [10000.0],
+            "valid_falloff_end_elapsed": [1000.0],
+            "selected_closure_elapsed_seconds": [400.0],
+            "selected_closure_g_time": [0.1],
+        })
+        summary_path = tmp_path / "summary.csv"
+        output_path = tmp_path / "tp_reachability_audit.csv"
+        summary.to_csv(summary_path, index=False)
+
+        from clotho.cli import main
+
+        exit_code = main([
+            "closure-tp-reachability-audit",
+            "--stage-summary", str(summary_path),
+            "--output", str(output_path),
+            "--efficiency-grid", "0.10,0.20",
+            "--g-time-m", "0.8",
+        ])
+
+        assert exit_code == 0
+        out = pd.read_csv(output_path)
+        assert len(out) == 2
+        assert "tp_reachability_interpretation" in out.columns
 
 
 class TestBarreeTangentClosure:

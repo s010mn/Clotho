@@ -3871,3 +3871,86 @@ Scope confirmation:
 - no `/tmp` CSV/PNG committed；
 - no push master；
 - efficiency prior remains sensitivity only；
+
+## Phase 5J：tp reachability audit
+
+Phase 5J adds a CSV-only `closure-tp-reachability-audit` diagnostic. It answers
+how much `tp_corrected_seconds` would need to shrink for target fluid-efficiency
+`Gc` values to enter the current valid falloff window.
+
+Implementation:
+
+- Added `required_tp_multiplier_for_target_g()`:
+  - uses numeric bisection, not a linear approximation;
+  - returns the largest multiplier that still reaches target `Gc`;
+  - reports `already_reachable`, `ok`, `unreachable_even_at_min_multiplier`,
+    or `missing_inputs`.
+- Added `classify_tp_reachability()`:
+  - `current_reachable`;
+  - `plausible_tp_correction_0p6_to_1p0`;
+  - `aggressive_tp_correction_0p3_to_0p6`;
+  - `extreme_tp_correction_lt_0p3`;
+  - `unreachable_even_at_0p05`;
+  - `missing_inputs`.
+- Added `build_tp_reachability_audit()` and CLI command
+  `clotho closure-tp-reachability-audit`.
+- The CLI can read Phase 5H.1 `closure_g_time_efficiency_audit.csv` directly.
+  If per-stage `max_available_Gc` is absent, it auto-joins the default Phase 5I
+  `/tmp/gfunction-ref-audit-phase5i/efficiency_prior_stage_table.csv` when
+  present and infers the current valid-window elapsed from `G(max)`.
+- Added synthetic tests for:
+  - already-reachable target;
+  - unreachable even at min multiplier;
+  - bisection monotonic behaviour;
+  - reachability class thresholds;
+  - CLI CSV smoke.
+
+Reference smoke outside repo:
+
+```text
+output_dir: /tmp/gfunction-ref-audit-phase5j/
+rows: 150
+
+target eta 0.10: current=7, plausible=19, aggressive=2, missing=2
+required multiplier min/median/max: 0.327 / 0.897 / 1.000
+
+target eta 0.15: plausible=7, aggressive=20, extreme=1, missing=2
+required multiplier min/median/max: 0.195 / 0.534 / 0.717
+
+target eta 0.20: plausible=0, aggressive=22, extreme=6, missing=2
+required multiplier min/median/max: 0.130 / 0.357 / 0.480
+
+target eta 0.30: extreme=28, missing=2
+required multiplier min/median/max: 0.068 / 0.186 / 0.251
+
+target eta 0.40: extreme=27, unreachable_even_at_0p05=1, missing=2
+required multiplier min/median/max: 0.061 / 0.108 / 0.143
+```
+
+Interpretation:
+
+- Because G-time uses `delta = elapsed / tp`, large `tp` can numerically suppress
+  `G` at a fixed valid-window elapsed.
+- The old PPT stage 1 initiation-time sanity reference is about
+  `153 min / 228 min = 0.671`.
+- Target 10% efficiency has 7 currently reachable stages and 19 stages in the
+  0.6-1.0 plausible tp-correction class.
+- Target 20% efficiency (`Gc=0.5`) has no computed stages in the 0.6-1.0
+  plausible class; 22 are aggressive (0.3-0.6) and 6 are extreme (`<0.3`).
+- Target 30/40% requires extreme shortening for essentially all computed
+  stages.
+- This does not prove `tp` is wrong, does not make 20% a hard target, and does
+  not replace closure truth. It says the current valid window plus current
+  G-time/tp convention does not support target 20% by ordinary initiation-time
+  correction alone.
+
+Scope confirmation:
+
+- no default `tp` change；
+- no default closure pick change；
+- no formula default change；
+- no `I_F` change；
+- no H_w default change；
+- no real data added to repo；
+- no `/tmp` CSV/PNG committed；
+- no push master；
